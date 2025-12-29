@@ -1,0 +1,42 @@
+# --- Python / Environment ---
+__pycache__/
+*.py[cod]
+*$py.class
+.venv/
+env/
+venv/
+project-env/
+.env
+
+# --- AI Models & Weights ---
+# These are too large for Git. Keep them in a /weights folder locally.
+*.pt
+*.onnx
+*.weights
+weights/
+
+# --- Video & Data (Very Large) ---
+*.mp4
+*.avi
+*.mkv
+*.mov
+# Any raw recording folders
+recordings/
+data/
+
+# --- Sentinel System Specifics ---
+# Do not track the processed images stored for the Aggregator
+application/aggregator/web/static/
+application/aggregator/web/plates/
+application/aggregator/web/keyframes/
+
+# --- Redis & Logs ---
+*.log
+*.rdb
+*.aof
+
+# --- IDEs & OS ---
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db

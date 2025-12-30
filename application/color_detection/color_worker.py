@@ -232,6 +232,7 @@ def color_worker():
                     job_id = fields.get("job_id")
                     vehicle_type = fields.get("vehicle_type")
                     frame_path = fields.get("frame_path")
+                    plate_path = fields.get("plate_path")
                     
                     print(f"[Color] Processing job: {job_id} ({vehicle_type})")
                     
@@ -248,8 +249,8 @@ def color_worker():
                                 "worker": "color",
                                 "result": result,
                                 "status": "ok",
-                                "frame_path": frame_path,  # <--- CRITICAL: Pass this back
-                                "plate_path": plate_path  # <--- CRITICAL: Pass this back
+                                "frame_path": frame_path,  
+                                "plate_path": plate_path 
                             })
                             print(f"[Color] Completed: {job_id} -> {color_name} ({hex_code})")
                             r.xack(VEHICLE_JOBS_STREAM, COLOR_GROUP, msg_id)

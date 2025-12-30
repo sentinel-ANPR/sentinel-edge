@@ -112,8 +112,8 @@ def ocr_worker():
                                 "worker": "ocr",
                                 "result": result,
                                 "status": "ok",
-                                "frame_path": frame_path,  # <--- CRITICAL: Pass this back
-                                "plate_path": plate_path  # <--- CRITICAL: Pass this back
+                                "frame_path": frame_path, 
+                                "plate_path": plate_path 
                             })
                             print(f"[OCR] Completed: {job_id} -> {result}")
                             r.xack(VEHICLE_JOBS_STREAM, OCR_GROUP, msg_id)

@@ -60,7 +60,7 @@ class ResultAggregator:
             files["keyframe_file"] = open(frame_path, "rb")
             
             # Open Plate 
-            if plate_path and plate_path not in ["None", "", b"None"] and os.path.exists(plate_path):
+            if plate_path and os.path.exists(plate_path):
                 files["plate_file"] = open(plate_path, "rb")
 
             self.log_agg(f"Uploading {job_data['vehicle_id']} to Central...")

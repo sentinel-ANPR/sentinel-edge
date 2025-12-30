@@ -42,6 +42,7 @@ def logo_worker():
                     job_id = fields.get("job_id")
                     vehicle_type = fields.get("vehicle_type")
                     frame_path = fields.get("frame_path")
+                    plate_path = fields.get("plate_path")
                     
                     print(f"[Logo] Processing job: {job_id} ({vehicle_type})")
                     
@@ -54,8 +55,8 @@ def logo_worker():
                                 "worker": "logo",
                                 "result": result,
                                 "status": "ok",
-                                "frame_path": frame_path,  # <--- CRITICAL: Pass this back
-                                "plate_path": plate_path  # <--- CRITICAL: Pass this back
+                                "frame_path": frame_path, 
+                                "plate_path": plate_path  
                             })
                             print(f"[Logo] Completed: {job_id} -> {result}")
                             r.xack(VEHICLE_JOBS_STREAM, LOGO_GROUP, msg_id)

@@ -27,6 +27,16 @@ class ResultAggregator:
             color_name, hex_code = result.split('|', 1)
             return color_name.strip(), hex_code.strip()
         return result.strip(), "#000000"
+    
+    def cleanup_files(self, frame_path, plate_path):
+        try:
+            if frame_path and os.path.exists(frame_path):
+                os.remove(frame_path)
+            
+            if plate_path and os.path.exists(plate_path):
+                os.remove(plate_path)
+        except Exception as e:
+            self.log_agg(f"Cleanup Error: {e}")
 
     def report_to_central(self, job_data, frame_path, plate_path):
         # upload physical binary files to the central server
@@ -68,6 +78,8 @@ class ResultAggregator:
             
             if response.status_code == 200:
                 self.log_agg(f"Success: {job_data['vehicle_id']}")
+                # remove file from disk
+                self.cleanup_files(frame_path, plate_path)
                 return True
             return False
 

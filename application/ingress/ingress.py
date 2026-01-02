@@ -43,11 +43,13 @@ if not RTSP_URL:
     print("Error: RTSP_STREAM not set in environment variables.")
     exit(1)
 
-# set up storage paths - store directly in web/static structure
+# set up storage paths
 PROJECT_ROOT = Path(__file__).resolve().parent.parent 
-AGGREGATOR_WEB_ROOT = PROJECT_ROOT / "aggregator" / "web"
-STATIC_PATH = AGGREGATOR_WEB_ROOT / "static"
-LOCATION_PATH = STATIC_PATH / LOCATION
+DIR_NAME = f"static" 
+LOCATION_PATH = PROJECT_ROOT / DIR_NAME
+# subfolders
+KEYFRAMES_PATH = LOCATION_PATH / "keyframes"
+PLATES_PATH = LOCATION_PATH / "plates"
 
 # bufferless capture for rtsp ( mgiht ahve to swtich to vidgear )
 class BufferlessCapture:
@@ -135,92 +137,55 @@ class StandardCapture:
         return self.cap.isOpened()
 
 def ensure_storage_structure():
-    """Ensure the aggregator/web/static/location directory structure exists"""
-    AGGREGATOR_WEB_ROOT.mkdir(exist_ok=True)
-    STATIC_PATH.mkdir(exist_ok=True)
+    # ensure the directory structure exists"""    
     LOCATION_PATH.mkdir(exist_ok=True)
+    
+    KEYFRAMES_PATH.mkdir(parents=True, exist_ok=True)
+    PLATES_PATH.mkdir(parents=True, exist_ok=True)
     print(f"Storage structure initialized: {LOCATION_PATH}")
 
-def get_date_folder():
-    """Get or create today's date folder with keyframes and plates subdirectories"""
-    today = datetime.date.today().strftime("%Y-%m-%d")
-    date_folder = LOCATION_PATH / today
-    keyframes_folder = date_folder / "keyframes"
-    plates_folder = date_folder / "plates"
-    
-    # create all directories
-    keyframes_folder.mkdir(parents=True, exist_ok=True)
-    plates_folder.mkdir(parents=True, exist_ok=True)
-    
-    return date_folder, today
-
 def save_keyframe_organized(vehicle_crop, vehicle_id):
-    """Save keyframe in organized structure: /aggregator/web/static/LOCATION/DATE/keyframes/VEHICLE_ID.jpg"""
+    #save to static-LOCATION/keyframes/
     try:
-        date_folder, date_str = get_date_folder()
-        keyframes_folder = date_folder / "keyframes"
         filename = f"{vehicle_id}.jpg"
-        file_path = keyframes_folder / filename
+        file_path = KEYFRAMES_PATH / filename
         
-        # save the image
         success = cv2.imwrite(str(file_path), vehicle_crop)
         
         if success:
-            relative_path = f"static/{LOCATION}/{date_str}/keyframes/{filename}"
-            print(f"Saved keyframe: {relative_path}")
-            print(f"Full path: {file_path}")
+            # URL path matches folder name: static-LOCATION/keyframes/filename.jpg
+            relative_path = f"{DIR_NAME}/keyframes/{filename}"
             return str(file_path), relative_path
-        else:
-            print(f"Failed to save keyframe for {vehicle_id}")
-            return None, None
-            
+        return None, None
     except Exception as e:
-        print(f"Error saving keyframe for {vehicle_id}: {e}")
+        print(f"Error saving keyframe: {e}")
         return None, None
-
-
-def detect_and_save_plate(vehicle_crop, vehicle_id):
-    """Detect license plate in vehicle crop and save it in plates subdirectory"""
     
-    # if plate model is not loaded, return None, None
-    if plate_model is None:
-        return None, None
+def detect_and_save_plate(vehicle_crop, vehicle_id):
+    #save to static-LOCATION/plates/
+    if plate_model is None: return None, None
     
     try:
         results = plate_model(vehicle_crop, verbose=False)
         
         if len(results) > 0 and len(results[0].boxes) > 0:
-            # get the first detected plate
             box = results[0].boxes[0]
             x1, y1, x2, y2 = map(int, box.xyxy[0])
-            
-            # crop plate from vehicle image
             plate_crop = vehicle_crop[y1:y2, x1:x2]
             
-            # save plate image in plates subdirectory
-            plate_filename = f"{vehicle_id}_plate.jpg"
+            filename = f"{vehicle_id}_plate.jpg"
+            file_path = PLATES_PATH / filename
             
-            # get organized path for the vehicle (reuse existing date folder)
-            date_folder, date_str = get_date_folder()
-            plates_folder = date_folder / "plates"
-            
-            plate_path = plates_folder / plate_filename
-            cv2.imwrite(str(plate_path), plate_crop)
-            
-            # construct relative path for URL
-            plate_relative_path = f"static/{LOCATION}/{date_str}/plates/{plate_filename}"
-            
-            print(f"  - Saved plate: {plate_relative_path}")
-            return str(plate_path), plate_relative_path
-        else:
-            # no plate detected, return a tuple of Nones
-            return None, None
-            
-    except Exception as e:
-        print(f"Error during plate detection for {vehicle_id}: {e}")
-        # on error, return a tuple of Nones
+            if cv2.imwrite(str(file_path), plate_crop):
+                # URL path matches folder name: static-LOCATION/plates/filename.jpg
+                relative_path = f"{DIR_NAME}/plates/{filename}"
+                print(f"  - Saved plate: {relative_path}")
+                return str(file_path), relative_path
+                
         return None, None
-
+    except Exception as e:
+        print(f"Plate error: {e}")
+        return None, None
 
 # initialize storage structure
 ensure_storage_structure()

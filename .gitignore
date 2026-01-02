@@ -29,6 +29,7 @@ data/
 application/aggregator/web/static/
 application/aggregator/web/plates/
 application/aggregator/web/keyframes/
+application/static/
 
 # --- Redis & Logs ---
 *.log

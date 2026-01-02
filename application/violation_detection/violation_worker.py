@@ -26,13 +26,6 @@ except Exception as e:
     sys.exit(1)
 
 def get_violation_code(frame_path):
-    """
-    Returns violation type integer:
-    0: No Violation
-    1: No Helmet
-    2: Triple Riding (3x)
-    3: Both (No Helmet + Triple Riding)
-    """
     if not frame_path or not os.path.exists(frame_path):
         print(f"Error: Image path invalid {frame_path}")
         return 0
@@ -40,28 +33,43 @@ def get_violation_code(frame_path):
     try:
         results = model(frame_path, verbose=False)
         
-        if not results:
+        if not results or results[0].boxes is None:
             return 0
 
         result = results[0]
-        if result.boxes is None:
-            return 0
-            
-        detected_classes = result.boxes.cls.tolist()
+        boxes = result.boxes
         
-        # --- ID MAPPING ---
+        # ids nad counters
         HELMET_ID = 0 
-        NO_HELMET_ID = 1
+        NO_HELMET_ID = 1        
+        num_helmets = 0
+        num_no_helmets = 0
         
-        num_helmets = detected_classes.count(HELMET_ID)
-        num_no_helmets = detected_classes.count(NO_HELMET_ID)
+        # cehck confidence before setting 
+        CONF_THRESHOLD = 0.40  
+
+        for box in boxes:
+            cls_id = int(box.cls[0])
+            conf = float(box.conf[0])
+
+            if cls_id == HELMET_ID:
+                num_helmets += 1
+            
+            elif cls_id == NO_HELMET_ID:
+                if conf > CONF_THRESHOLD:
+                    num_no_helmets += 1
+                    print(f"   Found No-Helmet (Conf: {conf:.2f}) - COUNTED")
+                else:
+                    print(f"   Ignored No-Helmet (Conf: {conf:.2f}) - TOO LOW")
+
         total_people = num_helmets + num_no_helmets
         
-        # --- LOGIC FOR CODES 0-3 ---
+        # for code 0-3
         has_no_helmet = num_no_helmets > 0
         is_triple_riding = total_people >= 3
         
         violation_code = 0
+        details = ""
         
         if has_no_helmet and is_triple_riding:
             violation_code = 3
@@ -76,7 +84,8 @@ def get_violation_code(frame_path):
             violation_code = 0
             details = "Clean"
 
-        print(f"  -> Result: Code {violation_code} [{details}]")
+        # trace log
+        print(f"  -> [WORKER OUTPUT] Code: {violation_code} | {details}")
         return violation_code
 
     except Exception as e:

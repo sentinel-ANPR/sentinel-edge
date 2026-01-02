@@ -44,7 +44,6 @@ nvidia-nvjitlink-cu12==12.8.93
 nvidia-nvtx-cu12==12.8.90
 onnxruntime==1.23.1
 opencv-python==4.12.0.88
-opencv-python-headless==4.12.0.88
 packaging==25.0
 pillow==11.3.0
 polars==1.34.0

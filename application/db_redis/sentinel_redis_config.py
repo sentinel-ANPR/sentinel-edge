@@ -1,15 +1,11 @@
-# Sentinel Redis Configuration
 import redis
 import os
 
-# Redis Connection
 REDIS_HOST = os.getenv("REDIS_HOST", "localhost")
 REDIS_PORT = int(os.getenv("REDIS_PORT", 6379))
 REDIS_DB = int(os.getenv("REDIS_DB", 0))
 
-# Redis connection instance
 def get_redis_connection():
-    """Get Redis connection with decode_responses=True for strings"""
     return redis.Redis(
         host=REDIS_HOST, 
         port=REDIS_PORT, 
@@ -31,14 +27,14 @@ AGGREGATOR_GROUP = "aggregator"
 INGEST_GROUP = "ingest"
 
 # Processing Configuration
-BATCH_SIZE = 10          # Messages per batch
+BATCH_SIZE = 10          # messages per batch
 BLOCK_TIME = 1000        # ms to block on XREADGROUP
 ACK_TIMEOUT = 30000      # 30 seconds
 MAX_RETRIES = 3
 
 # Worker Types
 WORKER_TYPES = {
-    "ocr": ["car", "bus", "motorcycle", "truck"],
+    "ocr": ["car", "bus", "motorcycle", "truck", "auto"],
     "color": ["car"],
     "logo": ["car"],
     "violation": ["motorcycle"]

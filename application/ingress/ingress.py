@@ -15,8 +15,17 @@ from vidgear.gears import CamGear
 IST = pytz.timezone('Asia/Kolkata')
 
 # model = YOLO("yolov8s.pt")
-model = YOLO("yolov8n.pt")
+model = YOLO("classifier-yolov8n.pt")
 plate_model = YOLO("license_plate_detector.pt")
+
+# new class ids
+CLASS_ID_CAR = 0
+CLASS_ID_MOTORCYCLE = 1
+CLASS_ID_BUS = 2
+CLASS_ID_TRUCK = 3
+CLASS_ID_AUTO = 4
+
+TRACK_CLASSES = [CLASS_ID_CAR, CLASS_ID_MOTORCYCLE, CLASS_ID_BUS, CLASS_ID_TRUCK, CLASS_ID_AUTO]
 
 # get configuration from environment
 LOCATION = os.getenv("LOCATION", "DEFAULT_LOCATION")
@@ -288,7 +297,7 @@ try:
 
         # YOLO Tracking
         # persist=True is crucial for ID tracking
-        results = model.track(frame, classes=[2, 3, 5, 7], verbose=False, tracker="bytetrack.yaml", persist=True)
+        results = model.track(frame, classes=TRACK_CLASSES, verbose=False, tracker="bytetrack.yaml", persist=True)        
         
         # process detections
         if results[0].boxes is not None and results[0].boxes.id is not None:
@@ -313,7 +322,7 @@ try:
                         vehicle_type = model.names[class_id]
                         
                         # apply padding logic
-                        if class_id == 3: # motorcycle
+                        if class_id == CLASS_ID_MOTORCYCLE:
                             h = y2 - y1
                             w = x2 - x1
                             y1 = max(0, y1 - int(h * 3.5))

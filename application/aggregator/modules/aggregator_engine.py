@@ -8,7 +8,7 @@ from db_redis.sentinel_redis_config import *
 from dotenv import load_dotenv
 
 class ResultAggregator:
-    """EDGE NODE VERSION: Bundles worker results and uploads images to Central Server"""
+    # undles worker results and uploads images to Central Server
     
     def __init__(self):
         self.pending_jobs = defaultdict(dict)
@@ -17,7 +17,6 @@ class ResultAggregator:
         self.location = os.getenv("LOCATION", "UNKNOWN")
 
     def log_agg(self, message):
-        """Standardized log format to match Ingress and Workers"""
         YELLOW = "\033[93m"
         timestamp = datetime.datetime.now().strftime("%H:%M:%S")
         print(f"{YELLOW}[ Aggregator] {timestamp} | {message}")
@@ -30,21 +29,21 @@ class ResultAggregator:
         return result.strip(), "#000000"
 
     def report_to_central(self, job_data, frame_path, plate_path):
-        """Uploads physical binary files to the Central Server"""
+        # upload physical binary files to the central server
         if not self.central_url:
             self.log_agg("CENTRAL_API_URL not configured")
             return False
 
         endpoint = f"{self.central_url}/api/ingest/vehicle-complete"
         
-        # Validation: frame_path is mandatory for upload
+        # validation: frame_path is mandatory for upload REPALCE WITH MEMORY REDIS
         if not frame_path or frame_path in ["None", "", b"None"]:
             self.log_agg(f"No valid frame path for {job_data['vehicle_id']}")
             return False
 
         files = {}
         try:
-            # Metadata payload
+            # metadata payload
             payload = {
                 "vehicle_id": job_data["vehicle_id"],
                 "vehicle_type": job_data["vehicle_type"],
@@ -56,10 +55,11 @@ class ResultAggregator:
                 "timestamp": job_data["timestamp"]
             }
 
-            # Open Keyframe
+            # repalce both with redis
+            # open keyframe
             files["keyframe_file"] = open(frame_path, "rb")
             
-            # Open Plate 
+            # open plate 
             if plate_path and os.path.exists(plate_path):
                 files["plate_file"] = open(plate_path, "rb")
 
@@ -102,7 +102,8 @@ class ResultAggregator:
                         
                         if not job_id: continue
 
-                        # FIXED PATH LOGIC: 
+                        # ISNTEAD OF GFETTING HTE PATH FORM REDIS MESSAGE, WE COULKD JUST TAKE FROM REDIST:
+                        # OR JUST DETLET THE PATH AFTER ITS SENT 
                         # We must capture frame_path and plate_path from the Redis message.
                         if job_id not in self.pending_jobs:
                             self.pending_jobs[job_id] = {

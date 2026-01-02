@@ -12,22 +12,18 @@ if sys.platform != "win32":
 from application.aggregator.modules.aggregator_engine import ResultAggregator
 
 def start_edge_aggregator():
-    """
-    Entry point to initialize and start the ResultAggregator loop.
-    This version is designed for the Edge Node (Uploader Mode).
-    """
+    # entry point to initialize and start the ResultAggregator loop.
     print(f"\n--- Starting Sentinel Edge Aggregator ---")
     print(f"Node ID: {os.getenv('NODE_ID')}")
     print(f"Location: {os.getenv('LOCATION')}")
     print(f"Central Server: {os.getenv('CENTRAL_API_URL')}")
     
-    # 1. Initialize the Aggregator Engine
-    # Note: On the Edge, we don't need manager, loop, or DB connection
+    # initialize the Aggregator Engine
     aggregator = ResultAggregator()
 
     try:
-        # 2. Start the blocking process loop
-        # This polls local Redis and POSTS results + images to Central
+        # start the blocking process loop
+        # this polls local Redis and POSTS results + images to Central
         aggregator.process_results()
         
     except KeyboardInterrupt:

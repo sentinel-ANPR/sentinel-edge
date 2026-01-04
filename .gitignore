@@ -13,6 +13,8 @@ project-env/
 *.pt
 *.onnx
 *.weights
+*.zip
+*.pkl
 weights/
 application/logo_detection/LOGO/
 

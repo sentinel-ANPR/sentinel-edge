@@ -15,7 +15,7 @@ def handle_shutdown(signum, frame):
 signal.signal(signal.SIGINT, handle_shutdown)
 signal.signal(signal.SIGTERM, handle_shutdown)
 
-MODEL_PATH = "violations_yolo11n.pt" 
+MODEL_PATH = "models/violations_yolo11n.pt" 
 
 print(f"Loading Violation Model from {MODEL_PATH}...")
 try:

@@ -9,7 +9,7 @@ import requests
 import signal
 import sys
 import psutil
-from aggregator.modules.aggregator_engine import ResultAggregator
+from aggregator import ResultAggregator
 from db_redis.sentinel_redis_config import *
 from dotenv import load_dotenv
 

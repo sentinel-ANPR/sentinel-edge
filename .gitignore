@@ -14,6 +14,7 @@ project-env/
 *.onnx
 *.weights
 weights/
+application/logo_detection/LOGO/
 
 # --- Video & Data (Very Large) ---
 *.mp4

@@ -16,6 +16,7 @@ project-env/
 *.zip
 *.pkl
 weights/
+application/logo_detection/LOGO/
 
 # --- Video & Data (Very Large) ---
 *.mp4

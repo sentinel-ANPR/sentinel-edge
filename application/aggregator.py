@@ -37,17 +37,21 @@ class ResultAggregator:
             return color_name.strip(), hex_code.strip()
         return result.strip(), "#000000"
     
-    def cleanup_files(self, frame_path, plate_path):
+    def cleanup_files(self, frame_path, plate_path, logo_path=None):
         try:
             if frame_path and os.path.exists(frame_path):
                 os.remove(frame_path)
             
             if plate_path and os.path.exists(plate_path):
                 os.remove(plate_path)
+            
+            # Clean up logo file
+            if logo_path and logo_path != "N/A" and os.path.exists(logo_path):
+                os.remove(logo_path)
         except Exception as e:
             self.log_agg(f"Cleanup Error: {e}")
 
-    def report_to_central(self, job_data, frame_path, plate_path):
+    def report_to_central(self, job_data, frame_path, plate_path, logo_path=None):
         # upload physical binary files to the central server
         if not self.central_url:
             self.log_agg("CENTRAL_API_URL not configured")
@@ -74,21 +78,24 @@ class ResultAggregator:
                 "timestamp": job_data["timestamp"]
             }
 
-            # repalce both with redis
             # open keyframe
             files["keyframe_file"] = open(frame_path, "rb")
             
             # open plate 
             if plate_path and os.path.exists(plate_path):
                 files["plate_file"] = open(plate_path, "rb")
+            
+            # open logo
+            if logo_path and logo_path != "N/A" and os.path.exists(logo_path):
+                files["logo_file"] = open(logo_path, "rb")
 
             self.log_agg(f"Uploading {job_data['vehicle_id']} to Central...")
             response = requests.post(endpoint, data=payload, files=files, timeout=10)
             
             if response.status_code == 200:
                 self.log_agg(f"Success: {job_data['vehicle_id']}")
-                # remove file from disk
-                self.cleanup_files(frame_path, plate_path)
+                # remove files from disk
+                self.cleanup_files(frame_path, plate_path, logo_path)
                 return True
             return False
 
@@ -123,22 +130,28 @@ class ResultAggregator:
                         
                         if not job_id: continue
 
-                        # take frame_path and plate_path from the redis message.
+                        # take frame_path, plate_path, and logo_path from the redis message.
                         if job_id not in self.pending_jobs:
                             self.pending_jobs[job_id] = {
                                 "results": {},
                                 "vehicle_id": f.get("vehicle_id"),
                                 "frame_path": f.get("frame_path") or f.get("keyframe_path"), # check both keys
                                 "plate_path": f.get("plate_path"),
+                                "logo_path": None,
                                 "timestamp": f.get("timestamp") or datetime.datetime.now().isoformat()
                             }
                         
-                        # i[pdate paths if they appear in later worker messages
+                        # update paths if they appear in later worker messages
                         current_path = f.get("frame_path") or f.get("keyframe_path")
                         if current_path: self.pending_jobs[job_id]["frame_path"] = current_path
                         
                         current_plate = f.get("plate_path")
                         if current_plate: self.pending_jobs[job_id]["plate_path"] = current_plate
+                        
+                        # update logo_path when logo worker responds
+                        current_logo = f.get("logo_path")
+                        if current_logo and current_logo != "N/A":
+                            self.pending_jobs[job_id]["logo_path"] = current_logo
 
                         self.pending_jobs[job_id]["results"][worker] = result
                         v_type = job_id.split("_")[0]
@@ -160,7 +173,12 @@ class ResultAggregator:
                             }
 
                             # upload using the absolute paths stored in memory
-                            if self.report_to_central(job_data, self.pending_jobs[job_id]["frame_path"], self.pending_jobs[job_id]["plate_path"]):
+                            if self.report_to_central(
+                                job_data, 
+                                self.pending_jobs[job_id]["frame_path"], 
+                                self.pending_jobs[job_id]["plate_path"],
+                                self.pending_jobs[job_id].get("logo_path")
+                            ):
                                 self.r.xack(VEHICLE_RESULTS_STREAM, AGGREGATOR_GROUP, msg_id)
                                 del self.pending_jobs[job_id]
 

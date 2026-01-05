@@ -45,7 +45,6 @@ class ResultAggregator:
             if plate_path and os.path.exists(plate_path):
                 os.remove(plate_path)
             
-            # Clean up logo file
             if logo_path and logo_path != "N/A" and os.path.exists(logo_path):
                 os.remove(logo_path)
         except Exception as e:

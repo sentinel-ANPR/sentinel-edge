@@ -15,6 +15,9 @@ project-env/
 *.weights
 *.zip
 *.pkl
+*.conf
+*.data
+*.names
 weights/
 application/logo_detection/LOGO/
 

@@ -23,10 +23,13 @@ LOGOS_PATH = PROJECT_ROOT / "static" / "logos"
 LOGOS_PATH.mkdir(parents=True, exist_ok=True)
 
 # Logo Detection Model Configuration
-LOGO_MODEL_PATH = Path(__file__).resolve().parent / "LOGO"
-logo_cfg = LOGO_MODEL_PATH / "yoloLogo.cfg"
-logo_weights = LOGO_MODEL_PATH / "yoloLogo.weights"
-logo_names_file = LOGO_MODEL_PATH / "yoloLogo.names"
+CURRENT_SCRIPT_DIR = Path(__file__).resolve().parent
+PROJECT_ROOT = CURRENT_SCRIPT_DIR.parent
+MODEL_DIR = PROJECT_ROOT / "models" / "logo"
+
+logo_cfg = MODEL_DIR / "yoloLogo.cfg"
+logo_weights = MODEL_DIR / "yoloLogo.weights"
+logo_names_file = MODEL_DIR / "yoloLogo.names"
 
 # Load YOLO logo detector once at startup
 print("[Logo] Loading YOLO logo detection model...")

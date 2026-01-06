@@ -11,10 +11,10 @@ from sklearn.cluster import KMeans
 from ultralytics import YOLO
 from db_redis.sentinel_redis_config import *
 
-YOLO_MODEL_PATH = "models/colour-yolo.pt"
-SVM_MODEL_PATH = "models/svm_model.pkl"
-SCALER_PATH = "models/scaler.pkl"
-ENCODER_PATH = "models/encoder.pkl"
+YOLO_MODEL_PATH = "models/color/colour-yolo.pt"
+SVM_MODEL_PATH = "models/color/svm_model.pkl"
+SCALER_PATH = "models/color/scaler.pkl"
+ENCODER_PATH = "models/color/encoder.pkl"
 
 # weights
 W_CLS = 0.65  # YOLO Weight

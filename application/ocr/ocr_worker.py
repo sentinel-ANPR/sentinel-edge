@@ -1,6 +1,7 @@
 import re
 import time
 import signal
+import bcrypt
 import threading
 from rapidocr_onnxruntime import RapidOCR
 import numpy as np

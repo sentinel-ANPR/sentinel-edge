@@ -14,7 +14,8 @@ from vidgear.gears import CamGear
 
 IST = pytz.timezone('Asia/Kolkata')
 
-model = YOLO("models/classifier-yolov8n.pt")
+# model = YOLO("models/classifier-yolov8n.pt")
+model = YOLO("models/classifier-yolov8n_openvino_model/", task="detect")
 plate_model = YOLO("models/license_plate_detector.pt")
 
 # new class ids

@@ -8,6 +8,11 @@ import cv2
 
 from db_redis.sentinel_redis_config import *
 
+# warmup
+dummy_img = np.zeros((100, 300, 3), dtype=np.uint8)
+reader(dummy_img)
+print("[OCR] Engine Warmup Complete.")
+
 shutdown_event = threading.Event()
 
 def handle_shutdown(signum, frame):

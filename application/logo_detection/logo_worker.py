@@ -35,11 +35,6 @@ logo_names_file = MODEL_DIR / "yoloLogo.names"
 print("[Logo] Loading YOLO logo detection model...")
 try:
     logo_net = cv2.dnn.readNetFromDarknet(str(logo_cfg), str(logo_weights))
-
-    print("[Logo] Enabling OpenVINO backend...")
-    logo_net.setPreferableBackend(cv2.dnn.DNN_BACKEND_INFERENCE_ENGINE)
-    logo_net.setPreferableTarget(cv2.dnn.DNN_TARGET_CPU)
-    
     with open(str(logo_names_file), "r") as f:
         logo_classes = [line.strip() for line in f.readlines()]
     

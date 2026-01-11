@@ -15,11 +15,11 @@ def handle_shutdown(signum, frame):
 signal.signal(signal.SIGINT, handle_shutdown)
 signal.signal(signal.SIGTERM, handle_shutdown)
 
-MODEL_PATH = "models/violations_yolo11n.pt" 
+MODEL_PATH = "models/violations_yolo11n_openvino_model/"
 
 print(f"Loading Violation Model from {MODEL_PATH}...")
 try:
-    model = YOLO(MODEL_PATH)
+    model = YOLO(MODEL_PATH, task="detect")
     print(f"Model Classes: {model.names}")
 except Exception as e:
     print(f"Error loading model: {e}")

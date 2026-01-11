@@ -8,11 +8,6 @@ import cv2
 
 from db_redis.sentinel_redis_config import *
 
-# warmup
-dummy_img = np.zeros((100, 300, 3), dtype=np.uint8)
-reader(dummy_img)
-print("[OCR] Engine Warmup Complete.")
-
 shutdown_event = threading.Event()
 
 def handle_shutdown(signum, frame):
@@ -25,6 +20,11 @@ signal.signal(signal.SIGTERM, handle_shutdown)
 # initialzise RapidOCR
 reader = RapidOCR()
 print("RapidOCR reader initialized.")
+
+# warmup
+dummy_img = np.zeros((100, 300, 3), dtype=np.uint8)
+reader(dummy_img)
+print("[OCR] Engine Warmup Complete.")
 
 def clean_and_sort_results(results):
     """Helper to sort boxes and clean text"""

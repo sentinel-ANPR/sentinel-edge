@@ -16,7 +16,7 @@ IST = pytz.timezone('Asia/Kolkata')
 
 # model = YOLO("models/classifier-yolov8n.pt")
 model = YOLO("models/classifier-yolov8n_openvino_model/", task="detect")
-plate_model = YOLO("models/license_plate_detector.pt")
+plate_model = YOLO("models/license_plate_detector_openvino_model/", task="detect")
 
 # new class ids
 CLASS_ID_CAR = 0
@@ -214,11 +214,15 @@ while frame is None:
 FRAME_HEIGHT, FRAME_WIDTH = frame.shape[:2]
 print(f"Stream Active: {FRAME_WIDTH}x{FRAME_HEIGHT}")
 
+# resolution
+TARGET_WIDTH = 1280
+TARGET_HEIGHT = 720
+
 # define keyframe trigger zone
 ZONE_X1 = 0
-ZONE_Y1 = 500
-ZONE_X2 = 1500
-ZONE_Y2 = 1050
+ZONE_Y1 = 330
+ZONE_X2 = 1000
+ZONE_Y2 = 700
 TRIGGER_ZONE = (ZONE_X1, ZONE_Y1, ZONE_X2, ZONE_Y2)
 
 def publish_job(vehicle_type, organized_path, relative_path, track_id, vehicle_id, plate_path=None, plate_relative_path=None):
@@ -249,10 +253,10 @@ print("Starting vehicle detection...")
 try:
     while True:
         # get latest frame from the selected engine
-        frame = cap.read()
+        raw_frame = cap.read()
         
         # if frame is None (stream ended or connection lost)
-        if frame is None:
+        if raw_frame is None:
             if IS_FILE:
                 print("End of video file.")
                 break 
@@ -260,9 +264,13 @@ try:
                 pass
                 continue
 
-        # YOLO Tracking
+        # resize it 
+        frame = cv2.resize(raw_frame, (TARGET_WIDTH, TARGET_HEIGHT))
+
+        # YOLO Tracking (with openvino now)
+        # ultralytics handles the OpenVINO backend automatically when passed the folder
         # persist=True is crucial for ID tracking
-        results = model.track(frame, classes=TRACK_CLASSES, verbose=False, tracker="bytetrack.yaml", persist=True)        
+        results = model.track(frame, classes=TRACK_CLASSES, verbose=False, tracker="bytetrack.yaml", persist=True)
         
         # process detections
         if results[0].boxes is not None and results[0].boxes.id is not None:

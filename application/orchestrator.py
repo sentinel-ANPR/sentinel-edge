@@ -193,6 +193,11 @@ class SentinelOrchestrator:
         """Start the Redis monitor"""
         print("\nStarting Redis Monitor...")
         return self.start_process("Monitor", ["python3", "db_redis/monitor_streams.py"], "96")
+
+    def start_resource_monitor(self):
+        """Start the Resource usage monitor"""
+        print("\nStarting Resource Monitor...")
+        return self.start_process("ResMon", ["python3", "db_redis/monitor_resources.py"], "96")
     
     def start_ingress(self):
         """Start the ingress process with location + RTSP stream"""
@@ -228,7 +233,7 @@ class SentinelOrchestrator:
         
         status_colors = {
             "OCR Worker": "92", "Color Worker": "94", "Logo Worker": "95", "Violation Worker": "97",
-            "Aggregator": "93", "Monitor": "96", "Ingress": "91"
+            "Aggregator": "93", "Monitor": "96", "ResMon": "96", "Ingress": "91"
         }
         
         try:
@@ -275,7 +280,7 @@ class SentinelOrchestrator:
         print(f"\n{'='*50}")
         print("Stopping all processes...")
 
-        shutdown_order = ["Ingress", "Monitor", "Aggregator", "Logo Worker", "Color Worker", "OCR Worker", "Violation Worker"]
+        shutdown_order = ["Ingress", "Monitor", "ResMon", "Aggregator", "Logo Worker", "Color Worker", "OCR Worker", "Violation Worker"]
 
         for name in shutdown_order:
             process = self.processes.get(name)
@@ -350,6 +355,12 @@ class SentinelOrchestrator:
             self.stop_all()
             return False
         
+        time.sleep(1)
+        if not self.start_resource_monitor():
+            print("Resource Monitor startup failed. Exiting.")
+            self.stop_all()
+            return False
+
         time.sleep(3)
         if not self.start_ingress():
             print("Ingress startup failed. Exiting.")

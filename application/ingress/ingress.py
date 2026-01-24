@@ -95,17 +95,18 @@ class BufferlessCapture:
 #capture with vidgear
 class VidgearCapture:
     def __init__(self, name):
+        # force ffmmpeg options iwth enviraonemtn variables 
+        os.environ["OPENCV_FFMPEG_CAPTURE_OPTIONS"] = "rtsp_transport;tcp"
+
         # logging=True helps debug connection issues
         # time_delay=0 prevents artificial delays
         options = {
                     "CAP_PROP_BUFFERSIZE": 0,           
-                    "rtsp_transport": "tcp",       
-                    "stimeout": "5000000",             
-                    "max_delay": "500000",              
-                    "fflags": "nobuffer"           
                 } 
-        self.stream = CamGear(source=name, logging=True, time_delay=0, **options).start()
 
+        # start the stream
+        self.stream = CamGear(source=name, logging=True, time_delay=0, **options).start()
+    
     def read(self):
         # vidgear returns just the frame, or None if failed
         return self.stream.read()

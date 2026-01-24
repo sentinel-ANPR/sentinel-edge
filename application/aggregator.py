@@ -127,18 +127,25 @@ class ResultAggregator:
                         worker = f.get("worker")
                         result = f.get("result")
                         
-                        if not job_id: continue
+                        # if junk, ack to get rid of it
+                        if not job_id: 
+                            self.r.xack(VEHICLE_RESULTS_STREAM, AGGREGATOR_GROUP, msg_id)
+                            continue
 
                         # take frame_path, plate_path, and logo_path from the redis message.
                         if job_id not in self.pending_jobs:
                             self.pending_jobs[job_id] = {
                                 "results": {},
+                                "msg_ids": [],
                                 "vehicle_id": f.get("vehicle_id"),
                                 "frame_path": f.get("frame_path") or f.get("keyframe_path"), # check both keys
                                 "plate_path": f.get("plate_path"),
                                 "logo_path": None,
                                 "timestamp": f.get("timestamp") or datetime.datetime.now().isoformat()
                             }
+
+                        # add current message ID to the list
+                        self.pending_jobs[job_id]["msg_ids"].append(msg_id)
                         
                         # update paths if they appear in later worker messages
                         current_path = f.get("frame_path") or f.get("keyframe_path")
@@ -156,6 +163,7 @@ class ResultAggregator:
                         v_type = job_id.split("_")[0]
                         expected = get_expected_workers(v_type)
 
+                        # cehck if all workers have reported
                         if set(self.pending_jobs[job_id]["results"].keys()) >= set(expected):
                             res = self.pending_jobs[job_id]["results"]
                             c_name, c_hex = self.parse_color_result(res.get("color", "unknown|#000000"))
@@ -178,6 +186,12 @@ class ResultAggregator:
                                 self.pending_jobs[job_id]["plate_path"],
                                 self.pending_jobs[job_id].get("logo_path")
                             ):
+
+                                # ack all messages for this job
+                                for m_id in self.pending_jobs[job_id]["msg_ids"]:
+                                    self.r.xack(VEHICLE_RESULTS_STREAM, AGGREGATOR_GROUP, m_id)
+                                
+                                # clean up memory
                                 self.r.xack(VEHICLE_RESULTS_STREAM, AGGREGATOR_GROUP, msg_id)
                                 del self.pending_jobs[job_id]
 

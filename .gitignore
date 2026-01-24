@@ -7,6 +7,7 @@ env/
 venv/
 project-env/
 .env
+*:Zone.Identifier
 
 # --- AI Models & Weights ---
 # These are too large for Git. Keep them in a /weights folder locally.

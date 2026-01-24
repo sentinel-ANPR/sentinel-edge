@@ -3,8 +3,10 @@ import signal
 import threading
 import sys
 import os
-from ultralytics import YOLO
+import cv2
+import numpy as np
 from db_redis.sentinel_redis_config import *
+import logging
 
 shutdown_event = threading.Event()
 
@@ -15,82 +17,116 @@ def handle_shutdown(signum, frame):
 signal.signal(signal.SIGINT, handle_shutdown)
 signal.signal(signal.SIGTERM, handle_shutdown)
 
-MODEL_PATH = "models/violations_yolo11n.pt" 
+MODEL_PATH = "models/violations_yolo11n.onnx" 
+CONF_THRESHOLD = 0.45  
+NMS_THRESHOLD = 0.45
+IOU_THRESHOLD = 0.60 # preven double boxes on the same head
+INPUT_SIZE = (640, 640)
 
 print(f"Loading Violation Model from {MODEL_PATH}...")
 try:
-    model = YOLO(MODEL_PATH)
-    print(f"Model Classes: {model.names}")
+    net = cv2.dnn.readNetFromONNX(MODEL_PATH)
+    
+    #  use GPU if available else CPU
+    try:
+        net.setPreferableBackend(cv2.dnn.DNN_BACKEND_CUDA)
+        net.setPreferableTarget(cv2.dnn.DNN_TARGET_CUDA)
+        logging.iNMS_THRESHOLDnfo("Using OpenCV DNN with CUDA (GPU)")
+    except:
+        net.setPreferableBackend(cv2.dnn.DNN_BACKEND_OPENCV)
+        net.setPreferableTarget(cv2.dnn.DNN_TARGET_CPU)
+        logging.info("Using OpenCV DNN on CPU")
+        
 except Exception as e:
-    print(f"Error loading model: {e}")
+    logging.error(f"Failed to load model: {e}")
     sys.exit(1)
 
 def get_violation_code(frame_path):
-    if not frame_path or not os.path.exists(frame_path):
-        print(f"Error: Image path invalid {frame_path}")
+    if not os.path.exists(frame_path):
         return 0
 
+    img = cv2.imread(frame_path)
+    if img is None: 
+        return 0
+    
+    # opencv preprocess with blobfromiamge -> handels resizing normaalzingg and swapping channels etc
+    blob = cv2.dnn.blobFromImage(img, 1/255.0, INPUT_SIZE, swapRB=True, crop=False)
+    net.setInput(blob)
+
+    # inference
     try:
-        results = model(frame_path, verbose=False)
-        
-        if not results or results[0].boxes is None:
-            return 0
-
-        result = results[0]
-        boxes = result.boxes
-        
-        # ids nad counters
-        HELMET_ID = 0 
-        NO_HELMET_ID = 1        
-        num_helmets = 0
-        num_no_helmets = 0
-        
-        # cehck confidence before setting 
-        CONF_THRESHOLD = 0.40  
-
-        for box in boxes:
-            cls_id = int(box.cls[0])
-            conf = float(box.conf[0])
-
-            if cls_id == HELMET_ID:
-                num_helmets += 1
-            
-            elif cls_id == NO_HELMET_ID:
-                if conf > CONF_THRESHOLD:
-                    num_no_helmets += 1
-                    print(f"   Found No-Helmet (Conf: {conf:.2f}) - COUNTED")
-                else:
-                    print(f"   Ignored No-Helmet (Conf: {conf:.2f}) - TOO LOW")
-
-        total_people = num_helmets + num_no_helmets
-        
-        # for code 0-3
-        has_no_helmet = num_no_helmets > 0
-        is_triple_riding = total_people >= 3
-        
-        violation_code = 0
-        details = ""
-        
-        if has_no_helmet and is_triple_riding:
-            violation_code = 3
-            details = f"BOTH: No Helmet ({num_no_helmets}) + 3x Riding ({total_people})"
-        elif is_triple_riding:
-            violation_code = 2
-            details = f"3x Riding ({total_people} pax)"
-        elif has_no_helmet:
-            violation_code = 1
-            details = f"No Helmet ({num_no_helmets})"
-        else:
-            violation_code = 0
-            details = "Clean"
-
-        # trace log
-        print(f"  -> [WORKER OUTPUT] Code: {violation_code} | {details}")
-        return violation_code
-
+        # runs the model
+        outputs = net.forward()
     except Exception as e:
-        print(f"Inference Error: {e}")
+        logging.error(f"Inference failed: {e}")
         return 0
+
+    # posr processinng -> filtering the results
+    # YOLO output format: [1, 6, 8400] -> Needs transposing to [8400, 6]
+    outputs = np.array([cv2.transpose(outputs[0])])
+    rows = outputs.shape[1]
+
+    boxes = []
+    scores = []
+    class_ids = []
+
+    # parse the rows 
+    for i in range(rows):
+        row = outputs[0][i]
+        confidence = row[4:].max() # find highest score among classes
+        
+        if confidence >= CONF_THRESHOLD:
+            class_id = row[4:].argmax()
+            
+            # extract box coordinates (center_x, center_y, w, h)
+            cx, cy, w, h = row[0], row[1], row[2], row[3]
+            
+            # scale box back to original image size
+            h_factor = img.shape[0] / INPUT_SIZE[1]
+            w_factor = img.shape[1] / INPUT_SIZE[0]
+            
+            left = int((cx - w/2) * w_factor)
+            top = int((cy - h/2) * h_factor)
+            width = int(w * w_factor)
+            height = int(h * h_factor)
+            
+            boxes.append([left, top, width, height])
+            scores.append(float(confidence))
+            class_ids.append(class_id)
+
+    # nms to remove duples    
+    indices = cv2.dnn.NMSBoxes(boxes, scores, CONF_THRESHOLD, NMS_THRESHOLD)
+
+    # Count results
+    num_helmets = 0
+    num_no_helmets = 0
+    
+    if len(indices) > 0:
+        for i in indices.flatten():
+            cid = class_ids[i]
+            if cid == 0: num_helmets += 1
+            elif cid == 1: num_no_helmets += 1
+
+    # logic to get teh code
+    total_people = num_helmets + num_no_helmets
+    has_no_helmet = num_no_helmets > 0
+    is_triple_riding = total_people >= 3
+    
+    violation_code = 0
+    details = "Clean"
+
+    if has_no_helmet and is_triple_riding:
+        violation_code = 3
+        details = f"BOTH: No Helmet ({num_no_helmets}) + 3x Riding ({total_people})"
+    elif is_triple_riding:
+        violation_code = 2
+        details = f"3x Riding ({total_people} pax)"
+    elif has_no_helmet:
+        violation_code = 1
+        details = f"No Helmet ({num_no_helmets})"
+        
+    logging.info(f"-> Result: Code {violation_code} | {details}")
+    return violation_code
 
 def violation_worker():
     r = get_redis_connection()

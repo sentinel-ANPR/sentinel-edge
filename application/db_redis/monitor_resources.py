@@ -3,7 +3,7 @@ import psutil
 import sys
 import os
 
-CHECK_INTERVAL = 15
+CHECK_INTERVAL = 7
 
 # mapping friendly names to unique strings in their command lines
 PROCESS_MAPPING = {

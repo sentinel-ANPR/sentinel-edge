@@ -323,9 +323,9 @@ try:
                     cv2.putText(frame, str(vis_ids[i]), (box[0], box[1]-10), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0,0,255), 2)
 
             display = cv2.resize(frame, (1280, 720))
-            cv2.imshow("Sentinel Ingress", display)
-            if cv2.waitKey(1) & 0xFF == ord('q'):
-                break
+            # cv2.imshow("Sentinel Ingress", display)
+            # if cv2.waitKey(1) & 0xFF == ord('q'):
+            #     break
 
 except KeyboardInterrupt:
     print("Stopping...")

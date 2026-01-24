@@ -203,7 +203,7 @@ class SentinelOrchestrator:
 
         if is_dev_mode:
             print(f"\033[93m[DEV MODE]\033[0m Detected MP4 file ({self.rtsp_stream}). Enabling Visual Debug Window.")
-            visual_flag = "1"
+            visual_flag = "0"
 
         ingress_env = {
             "LOCATION": self.location,

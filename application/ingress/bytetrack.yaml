@@ -1,0 +1,15 @@
+tracker_type: bytetrack
+
+# match_thresh and new_track_thresh are cruical paramaters in our case
+
+# Crictical for maintaning the ids reducing the distace between predicted positions
+match_thresh: 0.7   
+
+# Cruicial for duplicates 
+new_track_thresh: 0.65
+
+# Standard values 
+track_high_thresh: 0.5 
+track_low_thresh: 0.1 
+track_buffer: 30      
+fuse_score: true

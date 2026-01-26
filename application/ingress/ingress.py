@@ -44,11 +44,14 @@ if not RTSP_URL:
 
 # set up storage paths
 PROJECT_ROOT = Path(__file__).resolve().parent.parent 
+SCRIPT_DIR = Path(__file__).resolve().parent  # directory where ingress.py lives
 DIR_NAME = f"static" 
 LOCATION_PATH = PROJECT_ROOT / DIR_NAME
 # subfolders
 KEYFRAMES_PATH = LOCATION_PATH / "keyframes"
 PLATES_PATH = LOCATION_PATH / "plates"
+# tracker config
+BYTETRACK_CONFIG = SCRIPT_DIR / "bytetrack.yaml"
 
 # bufferless capture for rtsp ( mgiht ahve to swtich to vidgear )
 class BufferlessCapture:
@@ -220,6 +223,38 @@ ZONE_X2 = 1500
 ZONE_Y2 = 1050
 TRIGGER_ZONE = (ZONE_X1, ZONE_Y1, ZONE_X2, ZONE_Y2)
 
+def get_motorcycle_crop(frame, box, frame_w, frame_h):
+    """
+    Generates a vertical portrait crop for motorcycles.
+    Uses fixed pixel extensions from the YOLO box to ensure consistent head capture.
+    Returns the crop and the crop coordinates for visualization.
+    """
+    x1, y1, x2, y2 = box
+    w = x2 - x1
+    cx = (x1 + x2) // 2
+
+    # Fixed pixel extensions (adjust these values based on your camera setup)
+    upward_extension = 1000   # Pixels to extend above the top of the box
+    downward_extension = 100  # Pixels to extend below the bottom of the box
+    
+    # Calculate vertical crop with fixed pixel offsets
+    new_y1 = y1 - upward_extension  # Extend UP from top edge
+    new_y2 = y2 + downward_extension  # Extend DOWN from bottom edge
+    
+    # Clamp to frame boundaries to prevent errors
+    new_y1 = max(0, new_y1)
+    new_y2 = min(frame_h, new_y2)
+    
+    # Horizontal: use detection width + 30% padding on each side
+    crop_w = int(w * 1.3)
+    new_x1 = max(0, cx - crop_w // 2) 
+    new_x2 = min(frame_w, cx + crop_w // 2)
+
+    crop = frame[new_y1:new_y2, new_x1:new_x2]
+    crop_coords = (new_x1, new_y1, new_x2, new_y2)
+    
+    return crop, crop_coords
+
 def publish_job(vehicle_type, organized_path, relative_path, track_id, vehicle_id, plate_path=None, plate_relative_path=None):
     """Publish job with organized file paths"""
     timestamp = datetime.datetime.now(IST)
@@ -261,7 +296,7 @@ try:
 
         # YOLO Tracking
         # persist=True is crucial for ID tracking
-        results = model.track(frame, classes=TRACK_CLASSES, verbose=False, tracker="bytetrack.yaml", persist=True)        
+        results = model.track(frame, classes=TRACK_CLASSES, verbose=False, tracker=str(BYTETRACK_CONFIG), persist=True)        
         
         # process detections
         if results[0].boxes is not None and results[0].boxes.id is not None:
@@ -285,15 +320,13 @@ try:
                         class_id = class_ids[i]
                         vehicle_type = model.names[class_id]
                         
-                        # apply padding logic
+                        # apply cropping for motorcycles
                         if class_id == CLASS_ID_MOTORCYCLE:
-                            h = y2 - y1
-                            w = x2 - x1
-                            y1 = max(0, y1 - int(h * 3.5))
-                            x1 = max(0, x1 - int(w * 0.2))
-                            x2 = min(FRAME_WIDTH, x2 + int(w * 0.2))
-
-                        vehicle_crop = frame[y1:y2, x1:x2]
+                            vehicle_crop, crop_coords = get_motorcycle_crop(
+                                frame, box, FRAME_WIDTH, FRAME_HEIGHT
+                            )
+                        else:
+                            vehicle_crop = frame[y1:y2, x1:x2]
                         
                         if vehicle_crop.size > 0:
                             # ID generation

@@ -38,17 +38,16 @@ class ResultAggregator:
         return result.strip(), "#000000"
     
     def cleanup_files(self, frame_path, plate_path, logo_path=None):
-        try:
-            if frame_path and os.path.exists(frame_path):
-                os.remove(frame_path)
-            
-            if plate_path and os.path.exists(plate_path):
-                os.remove(plate_path)
-            
-            if logo_path and logo_path != "N/A" and os.path.exists(logo_path):
-                os.remove(logo_path)
-        except Exception as e:
-            self.log_agg(f"Cleanup Error: {e}")
+        to_delete = [frame_path, plate_path, logo_path]
+        
+        for path in to_delete:
+            # Check for both Python None and string "None"/"N/A"
+            if path and str(path) not in ["None", "N/A", ""] and os.path.exists(path):
+                try:
+                    os.remove(path)
+                    # self.log_agg(f"Deleted: {os.path.basename(path)}")
+                except Exception as e:
+                    self.log_agg(f"Cleanup Error on {path}: {e}")
 
     def report_to_central(self, job_data, frame_path, plate_path, logo_path=None):
         # upload physical binary files to the central server

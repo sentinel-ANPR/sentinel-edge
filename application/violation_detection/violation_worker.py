@@ -17,6 +17,13 @@ signal.signal(signal.SIGTERM, handle_shutdown)
 
 MODEL_PATH = "models/violations_yolo11n.pt" 
 
+# post-processing controls for duplicate / edge-box filtering
+CONF_THRESHOLD = 0.40
+DUPLICATE_IOU_THRESHOLD = 0.55
+EDGE_MARGIN_RATIO = 0.02
+MIN_NO_HELMET_AREA_RATIO = 0.0015
+MIN_NO_HELMET_HEIGHT_RATIO = 0.035
+
 print(f"Loading Violation Model from {MODEL_PATH}...")
 try:
     model = YOLO(MODEL_PATH)
@@ -24,6 +31,74 @@ try:
 except Exception as e:
     print(f"Error loading model: {e}")
     sys.exit(1)
+
+
+def compute_iou(box_a, box_b):
+    ax1, ay1, ax2, ay2 = box_a
+    bx1, by1, bx2, by2 = box_b
+
+    inter_x1 = max(ax1, bx1)
+    inter_y1 = max(ay1, by1)
+    inter_x2 = min(ax2, bx2)
+    inter_y2 = min(ay2, by2)
+
+    inter_w = max(0.0, inter_x2 - inter_x1)
+    inter_h = max(0.0, inter_y2 - inter_y1)
+    inter_area = inter_w * inter_h
+
+    area_a = max(0.0, (ax2 - ax1)) * max(0.0, (ay2 - ay1))
+    area_b = max(0.0, (bx2 - bx1)) * max(0.0, (by2 - by1))
+    union_area = area_a + area_b - inter_area
+
+    if union_area <= 0:
+        return 0.0
+    return inter_area / union_area
+
+
+def deduplicate_by_iou(detections, iou_threshold=DUPLICATE_IOU_THRESHOLD):
+    """Keep highest-confidence box among highly-overlapping detections."""
+    if not detections:
+        return []
+
+    sorted_dets = sorted(detections, key=lambda d: d["conf"], reverse=True)
+    kept = []
+
+    for det in sorted_dets:
+        is_duplicate = False
+        for existing in kept:
+            if compute_iou(det["xyxy"], existing["xyxy"]) >= iou_threshold:
+                is_duplicate = True
+                break
+        if not is_duplicate:
+            kept.append(det)
+
+    return kept
+
+
+def is_partial_edge_nohelmet(box, img_w, img_h):
+    """Treat small border-touching boxes as likely cropped/off-screen false positives."""
+    x1, y1, x2, y2 = box
+    box_w = max(0.0, x2 - x1)
+    box_h = max(0.0, y2 - y1)
+    box_area = box_w * box_h
+    img_area = float(max(1, img_w * img_h))
+
+    margin_x = img_w * EDGE_MARGIN_RATIO
+    margin_y = img_h * EDGE_MARGIN_RATIO
+    touches_edge = (
+        x1 <= margin_x or
+        y1 <= margin_y or
+        x2 >= (img_w - margin_x) or
+        y2 >= (img_h - margin_y)
+    )
+
+    area_ratio = box_area / img_area
+    height_ratio = box_h / float(max(1, img_h))
+
+    return touches_edge and (
+        area_ratio < MIN_NO_HELMET_AREA_RATIO or
+        height_ratio < MIN_NO_HELMET_HEIGHT_RATIO
+    )
 
 def get_violation_code(frame_path):
     if not frame_path or not os.path.exists(frame_path):
@@ -38,29 +113,39 @@ def get_violation_code(frame_path):
 
         result = results[0]
         boxes = result.boxes
+        img_h, img_w = result.orig_shape if hasattr(result, "orig_shape") else (0, 0)
         
         # ids nad counters
         HELMET_ID = 0 
         NO_HELMET_ID = 1        
-        num_helmets = 0
-        num_no_helmets = 0
-        
-        # cehck confidence before setting 
-        CONF_THRESHOLD = 0.40  
+        helmet_detections = []
+        nohelmet_detections = []
 
         for box in boxes:
             cls_id = int(box.cls[0])
             conf = float(box.conf[0])
+            xyxy = tuple(float(v) for v in box.xyxy[0].tolist())
 
             if cls_id == HELMET_ID:
-                num_helmets += 1
+                helmet_detections.append({"conf": conf, "xyxy": xyxy})
             
             elif cls_id == NO_HELMET_ID:
                 if conf > CONF_THRESHOLD:
-                    num_no_helmets += 1
-                    print(f"   Found No-Helmet (Conf: {conf:.2f}) - COUNTED")
+                    if img_w > 0 and img_h > 0 and is_partial_edge_nohelmet(xyxy, img_w, img_h):
+                        print(f"   Ignored No-Helmet (Conf: {conf:.2f}) - PARTIAL/OFFSCREEN")
+                        continue
+                    nohelmet_detections.append({"conf": conf, "xyxy": xyxy})
                 else:
                     print(f"   Ignored No-Helmet (Conf: {conf:.2f}) - TOO LOW")
+
+        helmet_detections = deduplicate_by_iou(helmet_detections)
+        nohelmet_detections = deduplicate_by_iou(nohelmet_detections)
+
+        num_helmets = len(helmet_detections)
+        num_no_helmets = len(nohelmet_detections)
+
+        if num_no_helmets > 0:
+            print(f"   Counted No-Helmet after dedupe/filter: {num_no_helmets}")
 
         total_people = num_helmets + num_no_helmets
         

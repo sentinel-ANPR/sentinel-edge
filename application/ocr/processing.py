@@ -3,6 +3,10 @@ import math
 import re
 import cv2
 from matplotlib import pyplot as plt
+from plate_syntax_corrector import build_default_corrector
+
+
+_SYNTAX_CORRECTOR = build_default_corrector()
 
 
 def preprocess_plate(plate):
@@ -73,13 +77,7 @@ def is_valid_indian_plate(text: str) -> bool:
     Check if text matches valid Indian license plate format.
     Handles standard, Bharat Series, EV (green), commercial, and taxi formats.
     """
-    if not text:
-        return False
-    
-    # Remove common separators
-    clean_text = text.replace(' ', '').replace('-', '').upper()
-    
-    return any(re.match(pattern, clean_text) for pattern in INDIAN_PLATE_FORMATS)
+    return _SYNTAX_CORRECTOR.is_valid_indian_plate(text)
 
 
 def correct_plate_text(text: str, ocr_score: float) -> str:
@@ -92,80 +90,7 @@ def correct_plate_text(text: str, ocr_score: float) -> str:
         XX##C####      - Commercial
         ##BH####XX     - Bharat Series
     """
-    if ocr_score >= 0.98:
-        return text  # High confidence, skip correction
-
-    if not text:
-        return ""
-
-    text = re.sub(r"[^A-Z0-9]", "", text.upper())
-    chars = list(text)
-
-    if len(chars) < 6:
-        return text
-
-    aggressive = ocr_score >= 0.75
-
-    digit_to_letter = {
-        "0": "O", "1": "I", "2": "Z", "3": "E",
-        "4": "A", "5": "S", "6": "G",
-        "7": "T", "8": "B"
-    }
-
-    letter_to_digit = {
-        "O": "0", "Q": "0", "D": "0",
-        "I": "1", "L": "1",
-        "Z": "2",
-        "E": "3",
-        "A": "4",
-        "S": "5",
-        "G": "6",
-        "T": "7",
-        "B": "8"
-    }
-
-    # State code
-    for i in range(2):
-        if chars[i].isdigit():
-            chars[i] = digit_to_letter.get(chars[i], chars[i])
-
-    # RTO code
-    for i in range(2, 4):
-        if chars[i].isalpha():
-            chars[i] = letter_to_digit.get(chars[i], chars[i])
-
-    # Detect if this is an EV plate (green plate format: XX##EV####)
-    is_ev_format = len(chars) >= 8 and chars[4:6] == ['E', 'V']
-    
-    if is_ev_format:
-        # EV plates: XX##EV#### - series is always 'EV'
-        if len(chars) >= 5 and chars[4].isdigit():
-            chars[4] = 'E'  # Force E
-        if len(chars) >= 6 and chars[5].isdigit():
-            chars[5] = 'V'  # Force V
-        series_end = 6
-    else:
-        # Standard format: Series (force at least 1 letter)
-        if len(chars) >= 5 and chars[4].isdigit():
-            chars[4] = digit_to_letter.get(chars[4], chars[4])
-
-        # Optional second series letter
-        if aggressive and len(chars) >= 6 and chars[5].isdigit():
-            chars[5] = digit_to_letter.get(chars[5], chars[5])
-
-        series_end = 5
-        if len(chars) >= 6 and chars[5].isalpha():
-            series_end = 6
-
-    # Number part
-    for i in range(series_end, len(chars)):
-        if chars[i].isalpha():
-            chars[i] = letter_to_digit.get(chars[i], chars[i])
-
-    # Trim to max length
-    chars = chars[:series_end + 4]
-
-    return "".join(chars)
+    return _SYNTAX_CORRECTOR.correct(text, ocr_score)
 
 VARIANT_WEIGHTS = {
     "Otsu Threshold": 1.0,
@@ -199,6 +124,7 @@ def rank_plate_candidates(candidates):
         # Format validation bonus (critical for accuracy)
         format_valid = is_valid_indian_plate(plate_text)
         format_bonus = 5.0 if format_valid else 0.0
+        syntax_bonus = _SYNTAX_CORRECTOR.syntax_score(plate_text)
         
         # Length penalty (Indian plates are 9-10 chars)
         length = len(plate_text)
@@ -217,6 +143,7 @@ def rank_plate_candidates(candidates):
         # Improved scoring formula
         final_score = (
             format_bonus +                    # +5 if valid format (dominant)
+            1.5 * syntax_bonus +             # Position-aware syntax confidence
             2.0 * math.sqrt(count) +          # Diminishing returns on count
             4.0 * avg_score +                 # Quality matters most
             2.0 * consistency +               # Reward consistent scores

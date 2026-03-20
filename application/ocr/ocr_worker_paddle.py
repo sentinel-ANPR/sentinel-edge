@@ -16,7 +16,7 @@ import re
 import time
 import signal
 import threading
-from typing import List, Dict, Any, Optional
+from typing import List, Dict, Any, Optional, Tuple
 
 import numpy as np
 import cv2
@@ -24,10 +24,8 @@ import logging
 
 from db_redis.sentinel_redis_config import *
 
-# Vendored Calicut processing functions (copy processing.py into sentinel_edge/)
 from processing import preprocess_plate, correct_plate_text, rank_plate_candidates
 
-# PaddleOCR (Calicut uses v3.x API options)
 try:
     from paddleocr import PaddleOCR
 except Exception as e:
@@ -43,11 +41,9 @@ def handle_shutdown(signum, frame):
 signal.signal(signal.SIGINT, handle_shutdown)
 signal.signal(signal.SIGTERM, handle_shutdown)
 
-# Initialize PaddleOCR once (expensive). Raise if not available.
 if PaddleOCR is None:
     raise RuntimeError("PaddleOCR is required but not installed. Install paddleocr to proceed.")
 
-# Configure PaddleOCR similarly to the Calicut repo
 ocr = PaddleOCR(
     use_doc_orientation_classify=True,
     use_doc_unwarping=True,
@@ -60,7 +56,6 @@ logging.getLogger('PaddleOCR').setLevel(logging.WARNING)
 
 print("PaddleOCR initialized for OCR worker.")
 
-# Per-segment score cutoff taken from Calicut code
 OCR_SEGMENT_THRESHOLD = 0.65
 
 def is_green_plate(image: np.ndarray) -> bool:
@@ -110,14 +105,72 @@ def clean_and_sort_results_for_fallback(results):
 def run_paddle_on_variant(variant_img: np.ndarray) -> List[Dict[str, Any]]:
     """
     Run PaddleOCR.predict on a single variant image.
-    Calicut usage: ocr.predict(ocr_input) -> list-like; take first element.
+    usage: ocr.predict(ocr_input) -> list-like; take first element.
     We return the results list or an empty list on failure.
     """
+    def _is_v2_line(item: Any) -> bool:
+        if not isinstance(item, (list, tuple)) or len(item) < 2:
+            return False
+        if not isinstance(item[1], (list, tuple)) or len(item[1]) < 1:
+            return False
+        return True
+
+    def _normalize_results(raw_results: Any) -> List[Dict[str, Any]]:
+        if not raw_results:
+            return []
+
+        if (
+            isinstance(raw_results, list)
+            and len(raw_results) > 0
+            and isinstance(raw_results[0], dict)
+            and ("rec_texts" in raw_results[0] or "dt_boxes" in raw_results[0])
+        ):
+            return raw_results
+
+        lines = []
+        if isinstance(raw_results, list) and len(raw_results) > 0:
+            first = raw_results[0]
+            if isinstance(first, list) and (len(first) == 0 or _is_v2_line(first[0])):
+                lines = first
+            elif _is_v2_line(first):
+                lines = raw_results
+
+        if not lines:
+            return []
+
+        rec_texts: List[str] = []
+        rec_scores: List[float] = []
+        dt_boxes: List[Any] = []
+
+        for line in lines:
+            try:
+                box = line[0]
+                text_score = line[1]
+                text = str(text_score[0])
+                score = float(text_score[1]) if len(text_score) > 1 else 0.8
+                rec_texts.append(text)
+                rec_scores.append(score)
+                dt_boxes.append(box)
+            except Exception:
+                continue
+
+        if not rec_texts:
+            return []
+
+        return [{"rec_texts": rec_texts, "rec_scores": rec_scores, "dt_boxes": dt_boxes}]
+
     try:
-        results = ocr.predict(variant_img) or []
-        return results
+        if hasattr(ocr, "predict"):
+            raw_results = ocr.predict(variant_img) or []
+            return _normalize_results(raw_results)
+
+        if hasattr(ocr, "ocr"):
+            raw_results = ocr.ocr(variant_img, cls=True) or []
+            return _normalize_results(raw_results)
+
+        raise AttributeError("PaddleOCR instance has neither 'predict' nor 'ocr'")
     except Exception as e:
-        logging.exception("PaddleOCR predict failed on variant: %s", e)
+        logging.exception("PaddleOCR inference failed on variant: %s", e)
         return []
 
 def assemble_multiline_plate(detections: List[Dict[str, Any]], plate_height: int):
@@ -184,9 +237,98 @@ def assemble_multiline_plate(detections: List[Dict[str, Any]], plate_height: int
 
     return final_text, final_score
 
+
+def build_variant_detections(
+    ocr_result: Dict[str, Any],
+    score_threshold: float = OCR_SEGMENT_THRESHOLD,
+) -> List[Dict[str, Any]]:
+    """
+    Convert PaddleOCR result dict into normalized token detections.
+    """
+    texts = ocr_result.get("rec_texts", []) or []
+    scores = ocr_result.get("rec_scores", []) or []
+    boxes = ocr_result.get("dt_boxes", []) or []
+
+    detections: List[Dict[str, Any]] = []
+    for i, (text, score) in enumerate(zip(texts, scores)):
+        try:
+            score_val = float(score)
+        except Exception:
+            score_val = 0.8
+
+        if score_val < score_threshold:
+            continue
+
+        box = boxes[i] if boxes and i < len(boxes) else None
+        x_center = 0.0
+        y_center = 0.0
+        if box and isinstance(box, (list, tuple)) and len(box) >= 4:
+            try:
+                xs = [float(p[0]) for p in box]
+                ys = [float(p[1]) for p in box]
+                x_center = sum(xs) / len(xs)
+                y_center = sum(ys) / len(ys)
+            except Exception:
+                x_center, y_center = 0.0, 0.0
+
+        detections.append({
+            "text": text,
+            "score": score_val,
+            "x_center": x_center,
+            "y_center": y_center,
+            "box": box,
+        })
+
+    return detections
+
+
+def collapse_text_from_ocr_result(
+    ocr_result: Dict[str, Any],
+    score_threshold: float = OCR_SEGMENT_THRESHOLD,
+) -> str:
+    """
+    Build a simple alphanumeric candidate by concatenating high-confidence tokens.
+    """
+    texts = ocr_result.get("rec_texts", []) or []
+    scores = ocr_result.get("rec_scores", []) or []
+
+    parts: List[str] = []
+    for t, s in zip(texts, scores):
+        try:
+            sval = float(s)
+        except Exception:
+            sval = 0.8
+        if sval >= score_threshold:
+            parts.append(re.sub(r'[^A-Z0-9]', '', str(t).upper()))
+
+    return "".join(parts)
+
+
+def build_fallback_images(plate_image: np.ndarray) -> Tuple[np.ndarray, np.ndarray]:
+    """
+    Prepare processed and inverted fallback images (both BGR).
+    """
+    gray_image = cv2.cvtColor(plate_image, cv2.COLOR_BGR2GRAY)
+    clahe = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8, 8))
+    enhanced_image = clahe.apply(gray_image)
+
+    scale_factor = 2.0
+    width = int(enhanced_image.shape[1] * scale_factor)
+    height = int(enhanced_image.shape[0] * scale_factor)
+    resized_image = cv2.resize(enhanced_image, (width, height), interpolation=cv2.INTER_CUBIC)
+
+    kernel = np.array([[-1, -1, -1], [-1, 9, -1], [-1, -1, -1]])
+    sharpened_image = cv2.filter2D(resized_image, -1, kernel)
+    processed_image = cv2.bilateralFilter(sharpened_image, 11, 17, 17)
+    inverted_image = cv2.bitwise_not(processed_image)
+
+    proc_bgr = cv2.cvtColor(processed_image, cv2.COLOR_GRAY2BGR)
+    inv_bgr = cv2.cvtColor(inverted_image, cv2.COLOR_GRAY2BGR)
+    return proc_bgr, inv_bgr
+
 def process_ocr(frame_path: str, plate_path: str) -> str:
     """
-    Primary OCR processing using Calicut preprocessing & PaddleOCR recognition.
+    Primary OCR processing using preprocessing & PaddleOCR recognition.
 
     Returns:
       - recognized plate string (e.g., "KL11A1234") on success
@@ -207,7 +349,7 @@ def process_ocr(frame_path: str, plate_path: str) -> str:
         if is_ev_plate:
             print(f"OCR Info: Detected Green EV Plate: {os.path.basename(plate_path)}")
 
-        # Use Calicut's preprocess_plate to get OCR-ready variants (returns RGB images)
+        # Use s preprocess_plate to get OCR-ready variants (returns RGB images)
         try:
             variants = preprocess_plate(plate_image)  # dict {variant_name: rgb_image}
         except Exception as e:
@@ -226,42 +368,9 @@ def process_ocr(frame_path: str, plate_path: str) -> str:
             if not ocr_results:
                 continue
 
-            # Calicut expects the first result to contain rec_texts/rec_scores/dt_boxes
+            # expects the first result to contain rec_texts/rec_scores/dt_boxes
             res = ocr_results[0] if isinstance(ocr_results, list) and len(ocr_results) > 0 else {}
-            texts = res.get("rec_texts", []) or []
-            scores = res.get("rec_scores", []) or []
-            boxes = res.get("dt_boxes", []) or []
-
-            # Build per-variant token list with centers for grouping
-            variant_detections: List[Dict[str, Any]] = []
-            for i, (text, score) in enumerate(zip(texts, scores)):
-                try:
-                    score_val = float(score)
-                except Exception:
-                    score_val = 0.8
-
-                if score_val < OCR_SEGMENT_THRESHOLD:
-                    continue
-
-                box = boxes[i] if boxes and i < len(boxes) else None
-                x_center = 0.0
-                y_center = 0.0
-                if box and isinstance(box, (list, tuple)) and len(box) >= 4:
-                    try:
-                        xs = [float(p[0]) for p in box]
-                        ys = [float(p[1]) for p in box]
-                        x_center = sum(xs) / len(xs)
-                        y_center = sum(ys) / len(ys)
-                    except Exception:
-                        x_center, y_center = 0.0, 0.0
-
-                variant_detections.append({
-                    "text": text,
-                    "score": score_val,
-                    "x_center": x_center,
-                    "y_center": y_center,
-                    "box": box,
-                })
+            variant_detections = build_variant_detections(res, OCR_SEGMENT_THRESHOLD)
 
             # Assemble multiline plate from tokens for this variant
             assembled_text, assembled_score = assemble_multiline_plate(variant_detections, plate_image.shape[0])
@@ -275,7 +384,7 @@ def process_ocr(frame_path: str, plate_path: str) -> str:
                     "box": None,
                 })
 
-        # Rank candidates with Calicut's ranker
+        # Rank candidates 
         try:
             ranked = rank_plate_candidates(flat_candidates) if flat_candidates else []
         except Exception as e:
@@ -295,41 +404,13 @@ def process_ocr(frame_path: str, plate_path: str) -> str:
         print("OCR Info: Ranked result invalid or not found. Attempting direct PaddleOCR fallback...")
 
         try:
-            # Prepare a grayscale-enhanced variant similar to sentinel fallback
-            gray_image = cv2.cvtColor(plate_image, cv2.COLOR_BGR2GRAY)
-            clahe = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8, 8))
-            enhanced_image = clahe.apply(gray_image)
-
-            scale_factor = 2.0
-            width = int(enhanced_image.shape[1] * scale_factor)
-            height = int(enhanced_image.shape[0] * scale_factor)
-            resized_image = cv2.resize(enhanced_image, (width, height), interpolation=cv2.INTER_CUBIC)
-
-            kernel = np.array([[-1, -1, -1], [-1, 9, -1], [-1, -1, -1]])
-            sharpened_image = cv2.filter2D(resized_image, -1, kernel)
-            processed_image = cv2.bilateralFilter(sharpened_image, 11, 17, 17)
-
-            inverted_image = cv2.bitwise_not(processed_image)
-
-            # PaddleOCR expects colored or grayscale images; convert processed_image to a 3-channel image:
-            proc_bgr = cv2.cvtColor(processed_image, cv2.COLOR_GRAY2BGR)
-            inv_bgr = cv2.cvtColor(inverted_image, cv2.COLOR_GRAY2BGR)
+            proc_bgr, inv_bgr = build_fallback_images(plate_image)
 
             # Direct predict on processed_image
             proc_res = run_paddle_on_variant(proc_bgr)
             if proc_res:
                 res = proc_res[0]
-                texts = res.get("rec_texts", []) or []
-                scores = res.get("rec_scores", []) or []
-                # Build a simple concatenated plate candidate
-                candidate_text = ""
-                for t, s in zip(texts, scores):
-                    try:
-                        sval = float(s)
-                    except Exception:
-                        sval = 0.8
-                    if sval >= OCR_SEGMENT_THRESHOLD:
-                        candidate_text += re.sub(r'[^A-Z0-9]', '', t.upper())
+                candidate_text = collapse_text_from_ocr_result(res, OCR_SEGMENT_THRESHOLD)
                 if candidate_text and 4 <= len(candidate_text) <= 10:
                     print(f"OCR Success (direct proc): Found '{candidate_text}'")
                     return candidate_text
@@ -338,16 +419,7 @@ def process_ocr(frame_path: str, plate_path: str) -> str:
             inv_res = run_paddle_on_variant(inv_bgr)
             if inv_res:
                 res = inv_res[0]
-                texts = res.get("rec_texts", []) or []
-                scores = res.get("rec_scores", []) or []
-                candidate_text = ""
-                for t, s in zip(texts, scores):
-                    try:
-                        sval = float(s)
-                    except Exception:
-                        sval = 0.8
-                    if sval >= OCR_SEGMENT_THRESHOLD:
-                        candidate_text += re.sub(r'[^A-Z0-9]', '', t.upper())
+                candidate_text = collapse_text_from_ocr_result(res, OCR_SEGMENT_THRESHOLD)
                 if candidate_text and 4 <= len(candidate_text) <= 10:
                     print(f"OCR Success (direct inverted): Found '{candidate_text}'")
                     return candidate_text

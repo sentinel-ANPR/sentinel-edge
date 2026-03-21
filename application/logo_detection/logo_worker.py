@@ -1,10 +1,8 @@
 import time
 import signal
-import sys
 import threading
 import cv2
-import numpy as np
-import os
+from ultralytics import YOLO
 from pathlib import Path
 from db_redis.sentinel_redis_config import *
 
@@ -17,48 +15,39 @@ def handle_shutdown(signum, frame):
 signal.signal(signal.SIGINT, handle_shutdown)
 signal.signal(signal.SIGTERM, handle_shutdown)
 
-# Setup storage path for cropped logos
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 LOGOS_PATH = PROJECT_ROOT / "static" / "logos"
 LOGOS_PATH.mkdir(parents=True, exist_ok=True)
 
-# Logo Detection Model Configuration
-CURRENT_SCRIPT_DIR = Path(__file__).resolve().parent
-PROJECT_ROOT = CURRENT_SCRIPT_DIR.parent
-MODEL_DIR = PROJECT_ROOT / "models" / "logo"
+MODEL_PATH = "models/logo-detector-yolo.pt"
+LOGO_CONF_THRESHOLD = 0.25
+LOGO_IMGSZ = 640
+LOGO_IOU_THRESHOLD = 0.45
+LOGO_MAX_DET = 10
 
-logo_cfg = MODEL_DIR / "yoloLogo.cfg"
-logo_weights = MODEL_DIR / "yoloLogo.weights"
-logo_names_file = MODEL_DIR / "yoloLogo.names"
-
-# Load YOLO logo detector once at startup
-print("[Logo] Loading YOLO logo detection model...")
+print(f"[Logo] Loading YOLO logo model from {MODEL_PATH}...")
 try:
-    logo_net = cv2.dnn.readNetFromDarknet(str(logo_cfg), str(logo_weights))
-    with open(str(logo_names_file), "r") as f:
-        logo_classes = [line.strip() for line in f.readlines()]
-    
-    # Get output layer names
-    ln = logo_net.getLayerNames()
-    try:
-        ln = [ln[i - 1] for i in logo_net.getUnconnectedOutLayers()]
-    except TypeError:
-        ln = [ln[i[0] - 1] for i in logo_net.getUnconnectedOutLayers()]
-    
-    output_layers = ln
-    print(f"[Logo] Model loaded successfully. {len(logo_classes)} logo classes available.")
+    logo_model = YOLO(MODEL_PATH)
+    print(f"[Logo] Model classes loaded: {len(logo_model.names)}")
 except Exception as e:
     print(f"[Logo] ERROR: Failed to load model: {e}")
-    logo_net = None
-    logo_classes = []
-    output_layers = []
+    logo_model = None
+
+
+def normalize_logo_class(raw_name):
+    if not raw_name:
+        return "Unknown"
+    base = raw_name.strip().lower()
+    if "_" in base and base.rsplit("_", 1)[-1].isdigit():
+        base = base.rsplit("_", 1)[0]
+    return base
 
 def process_logo(frame_path, vehicle_id):
     """
     Detect and crop car logo from keyframe image.
     Returns: (make_name, logo_path)
     """
-    if logo_net is None:
+    if logo_model is None:
         print(f"[Logo] Model not loaded, returning default values")
         return "Unknown", None
     
@@ -68,67 +57,71 @@ def process_logo(frame_path, vehicle_id):
         print(f"[Logo] Error: Could not load image from {frame_path}")
         return "Unknown", None
     
-    (H, W) = image.shape[:2]
-    
-    # Create blob and run detection
-    blob = cv2.dnn.blobFromImage(image, 1 / 255.0, (416, 416), swapRB=True, crop=False)
-    logo_net.setInput(blob)
-    layerOutputs = logo_net.forward(output_layers)
-    
-    boxes = []
-    confidences = []
-    classIDs = []
-    
-    # Process detections
-    for output in layerOutputs:
-        for detection in output:
-            scores = detection[5:]
-            classID = np.argmax(scores)
-            confidence = scores[classID]
-            
-            if confidence > 0.5:  # Confidence threshold
-                box = detection[0:4] * np.array([W, H, W, H])
-                (centerX, centerY, width, height) = box.astype("int")
-                x = int(centerX - (width / 2))
-                y = int(centerY - (height / 2))
-                
-                boxes.append([x, y, int(width), int(height)])
-                confidences.append(float(confidence))
-                classIDs.append(classID)
-    
-    # Apply Non-Max Suppression
-    idxs = cv2.dnn.NMSBoxes(boxes, confidences, 0.5, 0.3)
-    
-    # If logo detected, crop and save it
-    if len(idxs) > 0:
-        # Take the first (highest confidence) detection
-        i = idxs.flatten()[0]
-        (x, y, w, h) = boxes[i]
-        
-        # Ensure coordinates are within bounds
-        x = max(0, x)
-        y = max(0, y)
-        x_end = min(W, x + w)
-        y_end = min(H, y + h)
-        
-        # Crop the logo
-        cropped_logo = image[y:y_end, x:x_end]
-        
-        # Get the logo class name
-        logo_make = logo_classes[classIDs[i]]
-        
-        # Save cropped logo
-        logo_filename = f"{vehicle_id}_logo.jpg"
-        logo_path = LOGOS_PATH / logo_filename
-        cv2.imwrite(str(logo_path), cropped_logo)
-        
-        print(f"[Logo] Detected {logo_make} (confidence: {confidences[i]:.2f})")
-        print(f"[Logo] Saved cropped logo to: {logo_path}")
-        
-        return logo_make, str(logo_path)
-    else:
+    (img_h, img_w) = image.shape[:2]
+
+    try:
+        results = logo_model(
+            image,
+            verbose=False,
+            conf=LOGO_CONF_THRESHOLD,
+            iou=LOGO_IOU_THRESHOLD,
+            imgsz=LOGO_IMGSZ,
+            max_det=LOGO_MAX_DET,
+        )
+    except Exception as e:
+        print(f"[Logo] Inference error: {e}")
+        return "Unknown", None
+
+    if not results or results[0].boxes is None or len(results[0].boxes) == 0:
         print(f"[Logo] No logo detected in {frame_path}")
         return "Unknown", None
+
+    best_det = None
+    best_conf = -1.0
+    for box in results[0].boxes:
+        conf = float(box.conf[0])
+        if conf < LOGO_CONF_THRESHOLD:
+            continue
+
+        cls_id = int(box.cls[0])
+        x1, y1, x2, y2 = [int(v) for v in box.xyxy[0].tolist()]
+
+        x1 = max(0, min(x1, img_w - 1))
+        y1 = max(0, min(y1, img_h - 1))
+        x2 = max(0, min(x2, img_w))
+        y2 = max(0, min(y2, img_h))
+
+        if x2 <= x1 or y2 <= y1:
+            continue
+
+        if conf > best_conf:
+            best_conf = conf
+            best_det = (cls_id, x1, y1, x2, y2)
+
+    if best_det is None:
+        print(f"[Logo] No logo passed threshold in {frame_path}")
+        return "Unknown", None
+
+    cls_id, x1, y1, x2, y2 = best_det
+    cropped_logo = image[y1:y2, x1:x2]
+    if cropped_logo.size == 0:
+        print(f"[Logo] Empty crop for {frame_path}")
+        return "Unknown", None
+
+    raw_name = str(logo_model.names.get(cls_id, "Unknown"))
+    logo_make = normalize_logo_class(raw_name)
+
+    logo_filename = f"{vehicle_id}_logo.jpg"
+    logo_path = LOGOS_PATH / logo_filename
+    write_ok = cv2.imwrite(str(logo_path), cropped_logo)
+    if not write_ok:
+        print(f"[Logo] Failed to save cropped logo: {logo_path}")
+        return "Unknown", None
+
+    print(f"[Logo] Detected {logo_make} (confidence: {best_conf:.2f})")
+    print(f"[Logo] Saved cropped logo to: {logo_path}")
+
+    return logo_make, str(logo_path)
 
 def logo_worker():
     r = get_redis_connection()
@@ -159,15 +152,14 @@ def logo_worker():
                     
                     if should_worker_process("logo", vehicle_type):
                         try:
-                            # Process and get both make and logo_path
                             make, logo_path = process_logo(frame_path, vehicle_id)
                             
                             r.xadd(VEHICLE_RESULTS_STREAM, {
                                 "job_id": job_id,
                                 "vehicle_id": vehicle_id,
                                 "worker": "logo",
-                                "result": make,  # Car make/brand name
-                                "logo_path": logo_path if logo_path else "N/A",  # Path to cropped logo
+                                "result": make,  # car make/brand name
+                                "logo_path": logo_path if logo_path else "N/A",  # path to cropped logo
                                 "status": "ok",
                                 "frame_path": frame_path, 
                                 "plate_path": plate_path  
@@ -187,6 +179,7 @@ def logo_worker():
                                 "status": "error",
                                 "error": str(e)
                             })
+                            r.xack(VEHICLE_JOBS_STREAM, LOGO_GROUP, msg_id)
                     else:
                         print(f"[Logo] Skipping {vehicle_type} (not in scope)")
                         r.xack(VEHICLE_JOBS_STREAM, LOGO_GROUP, msg_id)

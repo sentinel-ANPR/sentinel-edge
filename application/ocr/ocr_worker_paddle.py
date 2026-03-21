@@ -16,6 +16,7 @@ import re
 import time
 import signal
 import threading
+from pathlib import Path
 from typing import List, Dict, Any, Optional, Tuple
 
 import numpy as np
@@ -23,8 +24,16 @@ import cv2
 import logging
 
 from db_redis.sentinel_redis_config import *
+from plate_detection import detect_plate_crops
+from model_config import resolve_model_path
 
-from processing import preprocess_plate, correct_plate_text, rank_plate_candidates
+from processing import preprocess_plate, correct_plate_text, rank_plate_candidates, is_valid_indian_plate
+
+try:
+    from ultralytics import YOLO
+except Exception as e:
+    YOLO = None
+    logging.exception("Failed to import YOLO for OCR fallback plate detection: %s", e)
 
 try:
     from paddleocr import PaddleOCR
@@ -51,12 +60,25 @@ ocr = PaddleOCR(
 )
 
 # Optional: reduce PaddleOCR verbosity if it's noisy in your logs
-logging.getLogger('ppocr').setLevel(logging.WARNING)
-logging.getLogger('PaddleOCR').setLevel(logging.WARNING)
+logging.getLogger('ppocr').setLevel(logging.ERROR)
+logging.getLogger('PaddleOCR').setLevel(logging.ERROR)
+logging.getLogger('paddleocr').setLevel(logging.ERROR)
 
 print("PaddleOCR initialized for OCR worker.")
 
 OCR_SEGMENT_THRESHOLD = 0.65
+
+PLATE_DETECTOR = None
+if YOLO is not None:
+    try:
+        plate_model_path = Path(resolve_model_path("MODEL_PLATE_DETECTOR_PATH", "models/license_plate_detector.pt"))
+        if plate_model_path.exists():
+            PLATE_DETECTOR = YOLO(str(plate_model_path))
+            print(f"OCR fallback plate detector loaded: {plate_model_path}")
+        else:
+            print(f"OCR fallback plate detector not found at: {plate_model_path}")
+    except Exception as e:
+        logging.exception("Failed to load fallback plate detector model: %s", e)
 
 def is_green_plate(image: np.ndarray) -> bool:
     """Detect green plates (EV) using HSV thresholding. Same heuristic as sentinel original."""
@@ -165,7 +187,7 @@ def run_paddle_on_variant(variant_img: np.ndarray) -> List[Dict[str, Any]]:
             return _normalize_results(raw_results)
 
         if hasattr(ocr, "ocr"):
-            raw_results = ocr.ocr(variant_img, cls=True) or []
+            raw_results = ocr.ocr(variant_img, cls=False) or []
             return _normalize_results(raw_results)
 
         raise AttributeError("PaddleOCR instance has neither 'predict' nor 'ocr'")
@@ -326,53 +348,44 @@ def build_fallback_images(plate_image: np.ndarray) -> Tuple[np.ndarray, np.ndarr
     inv_bgr = cv2.cvtColor(inverted_image, cv2.COLOR_GRAY2BGR)
     return proc_bgr, inv_bgr
 
-def process_ocr(frame_path: str, plate_path: str) -> str:
-    """
-    Primary OCR processing using preprocessing & PaddleOCR recognition.
 
-    Returns:
-      - recognized plate string (e.g., "KL11A1234") on success
-      - "N/A" on failure / when no valid plate found
-    """
-    if not plate_path or not os.path.exists(plate_path):
-        print(f"OCR Error: Plate path '{plate_path}' is invalid or does not exist.")
+def is_valid_plate_candidate(text: Optional[str]) -> bool:
+    if not text or text == "N/A":
+        return False
+    clean = re.sub(r'[^A-Z0-9]', '', str(text).upper())
+    return is_valid_indian_plate(clean)
+
+
+def process_plate_image(plate_image: np.ndarray, source_tag: str = "primary") -> str:
+    if plate_image is None or plate_image.size == 0:
         return "N/A"
 
     try:
-        plate_image = cv2.imread(plate_path)
-        if plate_image is None:
-            print(f"OCR Error: Failed to read image from {plate_path}. Returning N/A.")
-            return "N/A"
-
-        # Detect EV green plates (keeps original sentinel heuristic for EV handling)
         is_ev_plate = is_green_plate(plate_image)
         if is_ev_plate:
-            print(f"OCR Info: Detected Green EV Plate: {os.path.basename(plate_path)}")
+            print(f"OCR Info: Detected Green EV Plate ({source_tag})")
 
-        # Use s preprocess_plate to get OCR-ready variants (returns RGB images)
+        best_guess: Optional[str] = None
+
         try:
-            variants = preprocess_plate(plate_image)  # dict {variant_name: rgb_image}
+            variants = preprocess_plate(plate_image)
         except Exception as e:
-            logging.exception("preprocess_plate failed: %s", e)
+            logging.exception("preprocess_plate failed (%s): %s", source_tag, e)
             return "N/A"
 
         flat_candidates: List[Dict[str, Any]] = []
 
-        # Run OCR on each variant and assemble multi-line plate per-variant
         for variant_name, variant_img in variants.items():
             if variant_img is None:
                 continue
 
-            # Call Paddle on the variant
             ocr_results = run_paddle_on_variant(variant_img)
             if not ocr_results:
                 continue
 
-            # expects the first result to contain rec_texts/rec_scores/dt_boxes
             res = ocr_results[0] if isinstance(ocr_results, list) and len(ocr_results) > 0 else {}
             variant_detections = build_variant_detections(res, OCR_SEGMENT_THRESHOLD)
 
-            # Assemble multiline plate from tokens for this variant
             assembled_text, assembled_score = assemble_multiline_plate(variant_detections, plate_image.shape[0])
             if assembled_text:
                 corrected = correct_plate_text(assembled_text, assembled_score if assembled_score is not None else 0.8)
@@ -384,51 +397,112 @@ def process_ocr(frame_path: str, plate_path: str) -> str:
                     "box": None,
                 })
 
-        # Rank candidates 
         try:
             ranked = rank_plate_candidates(flat_candidates) if flat_candidates else []
         except Exception as e:
-            logging.exception("rank_plate_candidates failed: %s", e)
+            logging.exception("rank_plate_candidates failed (%s): %s", source_tag, e)
             ranked = []
 
         best_entry: Optional[Dict[str, Any]] = ranked[0] if ranked else None
         best_plate_text = best_entry.get("plate") if best_entry else None
+        if best_plate_text:
+            best_guess = best_plate_text
 
-        # Validate candidate similarly to sentinel's original checks
-        if best_plate_text and 4 <= len(best_plate_text) <= 10:
-            print(f"OCR Success (PaddleOCR+ranker): Found '{best_plate_text}'")
+        if is_valid_plate_candidate(best_plate_text):
+            print(f"OCR Success (PaddleOCR+ranker/{source_tag}): Found '{best_plate_text}'")
             return best_plate_text
 
-        # If the ranked result is invalid, optionally attempt a last-resort direct PaddleOCR read
-        # on the original plate image (both standard and inverted) to increase recall.
-        print("OCR Info: Ranked result invalid or not found. Attempting direct PaddleOCR fallback...")
+        print(f"OCR Info: Ranked result invalid ({source_tag}). Attempting direct PaddleOCR fallback...")
 
         try:
             proc_bgr, inv_bgr = build_fallback_images(plate_image)
 
-            # Direct predict on processed_image
             proc_res = run_paddle_on_variant(proc_bgr)
             if proc_res:
                 res = proc_res[0]
                 candidate_text = collapse_text_from_ocr_result(res, OCR_SEGMENT_THRESHOLD)
-                if candidate_text and 4 <= len(candidate_text) <= 10:
-                    print(f"OCR Success (direct proc): Found '{candidate_text}'")
+                if candidate_text and not best_guess:
+                    best_guess = candidate_text
+                if is_valid_plate_candidate(candidate_text):
+                    print(f"OCR Success (direct proc/{source_tag}): Found '{candidate_text}'")
                     return candidate_text
 
-            # Direct predict on inverted image
             inv_res = run_paddle_on_variant(inv_bgr)
             if inv_res:
                 res = inv_res[0]
                 candidate_text = collapse_text_from_ocr_result(res, OCR_SEGMENT_THRESHOLD)
-                if candidate_text and 4 <= len(candidate_text) <= 10:
-                    print(f"OCR Success (direct inverted): Found '{candidate_text}'")
+                if candidate_text and not best_guess:
+                    best_guess = candidate_text
+                if is_valid_plate_candidate(candidate_text):
+                    print(f"OCR Success (direct inverted/{source_tag}): Found '{candidate_text}'")
                     return candidate_text
 
         except Exception as e:
-            logging.exception("Direct PaddleOCR fallback failed: %s", e)
+            logging.exception("Direct PaddleOCR fallback failed (%s): %s", source_tag, e)
 
-        # Nothing valid found
-        print(f"OCR Validation Failed: Best candidate '{best_plate_text}' invalid or no candidate.")
+        if best_guess:
+            print(f"OCR Fallback ({source_tag}): No valid format candidate; using best match '{best_guess}'.")
+            return best_guess
+
+        print(f"OCR Validation Failed ({source_tag}): No valid plate candidate found.")
+        return "N/A"
+
+    except Exception as e:
+        logging.exception("Unexpected OCR error on plate image (%s): %s", source_tag, e)
+        return "N/A"
+
+def process_ocr(frame_path: str, plate_path: str) -> str:
+    """
+    Primary OCR processing using preprocessing & PaddleOCR recognition.
+
+    Returns:
+      - recognized plate string (e.g., "KL11A1234") on success
+      - "N/A" on failure / when no valid plate found
+    """
+    try:
+        best_guess: Optional[str] = None
+
+        if plate_path and os.path.exists(plate_path):
+            plate_image = cv2.imread(plate_path)
+            if plate_image is not None:
+                primary_result = process_plate_image(plate_image, source_tag="primary")
+                if is_valid_plate_candidate(primary_result):
+                    return primary_result
+                if primary_result and primary_result != "N/A":
+                    best_guess = primary_result
+            else:
+                print(f"OCR Error: Failed to read image from {plate_path}.")
+        else:
+            print(f"OCR Info: Plate path '{plate_path}' is invalid or missing. Trying fallback from frame crop.")
+
+        if not frame_path or not os.path.exists(frame_path):
+            print(f"OCR Validation Failed: Frame path '{frame_path}' unavailable for fallback.")
+            return "N/A"
+
+        vehicle_crop = cv2.imread(frame_path)
+        if vehicle_crop is None:
+            print(f"OCR Validation Failed: Could not read frame crop from '{frame_path}'.")
+            return "N/A"
+
+        fallback_crops = detect_plate_crops(vehicle_crop, PLATE_DETECTOR, max_candidates=4)
+        if not fallback_crops:
+            print("OCR Validation Failed: No alternate plate candidates detected in frame crop.")
+            return "N/A"
+
+        print(f"OCR Info: Trying {len(fallback_crops)} alternate plate candidate(s) from frame crop...")
+        for idx, candidate_crop in enumerate(fallback_crops, start=1):
+            candidate_result = process_plate_image(candidate_crop, source_tag=f"fallback_{idx}")
+            if is_valid_plate_candidate(candidate_result):
+                print(f"OCR Success (alternate candidate {idx}): Found '{candidate_result}'")
+                return candidate_result
+            if candidate_result and candidate_result != "N/A" and not best_guess:
+                best_guess = candidate_result
+
+        if best_guess:
+            print(f"OCR Fallback: No valid plate format from any crop; using best match '{best_guess}'.")
+            return best_guess
+
+        print("OCR Validation Failed: All alternate plate candidates rejected.")
         return "N/A"
 
     except Exception as e:

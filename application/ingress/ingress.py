@@ -11,11 +11,16 @@ from ultralytics import YOLO
 from db_redis.sentinel_redis_config import *
 import pytz
 from vidgear.gears import CamGear
+from plate_detection import detect_plate_crops
+from model_config import resolve_model_path
 
 IST = pytz.timezone('Asia/Kolkata')
 
-model = YOLO("models/classifier-yolov8n.pt")
-plate_model = YOLO("models/license_plate_detector.pt")
+VEHICLE_MODEL_PATH = resolve_model_path("MODEL_VEHICLE_CLASSIFIER_PATH", "models/classifier-yolov8n.pt")
+PLATE_MODEL_PATH = resolve_model_path("MODEL_PLATE_DETECTOR_PATH", "models/license_plate_detector.pt")
+
+model = YOLO(VEHICLE_MODEL_PATH)
+plate_model = YOLO(PLATE_MODEL_PATH)
 
 # new class ids
 CLASS_ID_CAR = 0
@@ -170,12 +175,9 @@ def detect_and_save_plate(vehicle_crop, vehicle_id):
     if plate_model is None: return None, None
     
     try:
-        results = plate_model(vehicle_crop, verbose=False)
-        
-        if len(results) > 0 and len(results[0].boxes) > 0:
-            box = results[0].boxes[0]
-            x1, y1, x2, y2 = map(int, box.xyxy[0])
-            plate_crop = vehicle_crop[y1:y2, x1:x2]
+        plate_crops = detect_plate_crops(vehicle_crop, plate_model, max_candidates=1)
+        if len(plate_crops) > 0:
+            plate_crop = plate_crops[0]
             
             filename = f"{vehicle_id}_plate.jpg"
             file_path = PLATES_PATH / filename

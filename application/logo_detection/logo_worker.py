@@ -2,9 +2,11 @@ import time
 import signal
 import threading
 import cv2
+import os
 from ultralytics import YOLO
 from pathlib import Path
 from db_redis.sentinel_redis_config import *
+from model_config import resolve_model_path
 
 shutdown_event = threading.Event()
 
@@ -19,7 +21,7 @@ PROJECT_ROOT = Path(__file__).resolve().parent.parent
 LOGOS_PATH = PROJECT_ROOT / "static" / "logos"
 LOGOS_PATH.mkdir(parents=True, exist_ok=True)
 
-MODEL_PATH = "models/logo-detector-yolo.pt"
+MODEL_PATH = resolve_model_path("MODEL_LOGO_PATH", "models/logo-detector-yolo.pt")
 LOGO_CONF_THRESHOLD = 0.25
 LOGO_IMGSZ = 640
 LOGO_IOU_THRESHOLD = 0.45

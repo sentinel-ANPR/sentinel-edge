@@ -9,8 +9,9 @@ from collections import Counter
 from sklearn.cluster import KMeans
 from ultralytics import YOLO
 from db_redis.sentinel_redis_config import *
+from model_config import resolve_model_path
 
-YOLO_MODEL_PATH = "models/colour-yolo.pt"
+YOLO_MODEL_PATH = resolve_model_path("MODEL_COLOR_PATH", "models/colour-yolo.pt")
 
 # if final score is lower it goes to Other
 CONF_THRESH = 0.55 

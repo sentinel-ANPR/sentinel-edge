@@ -5,6 +5,7 @@ import sys
 import os
 from ultralytics import YOLO
 from db_redis.sentinel_redis_config import *
+from model_config import resolve_model_path
 
 shutdown_event = threading.Event()
 
@@ -15,7 +16,7 @@ def handle_shutdown(signum, frame):
 signal.signal(signal.SIGINT, handle_shutdown)
 signal.signal(signal.SIGTERM, handle_shutdown)
 
-MODEL_PATH = "models/violations_yolo11n.pt" 
+MODEL_PATH = resolve_model_path("MODEL_VIOLATION_PATH", "models/violations_yolo11n.pt")
 
 # post-processing controls for duplicate / edge-box filtering
 CONF_THRESHOLD = 0.40

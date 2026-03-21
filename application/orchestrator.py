@@ -44,7 +44,7 @@ SCALING_CONFIG = {
         "min": _env_int("COLOR_MIN_WORKERS", 1),
         "max": _env_int("COLOR_MAX_WORKERS", 2),
         "threshold": _env_int("COLOR_SCALE_THRESHOLD", 20),
-        "script": "color_detection/color_worker.py",
+        "script": "color_detection/color_worker_yolo.py",
         "color": "94",
         "group": COLOR_GROUP,
     },

@@ -68,12 +68,14 @@ SCALING_CONFIG = {
 
 MAX_CPU_PERCENT = _env_float("MAX_CPU_PERCENT", 85.0)
 MAX_RAM_PERCENT = _env_float("MAX_RAM_PERCENT", 85.0)
+RESOURCE_LOG_INTERVAL = _env_int("RESOURCE_LOG_INTERVAL", 15)
 
 class SentinelOrchestrator:
     def __init__(self):
         self.processes = {} 
         self.worker_groups = {k: [] for k in SCALING_CONFIG.keys()} 
         self.ingress_processes = []
+        self.last_resource_log_ts = 0.0
         
         self.r = get_redis_connection()
         self.shutdown_requested = False
@@ -333,6 +335,20 @@ class SentinelOrchestrator:
     def start_monitor(self):
         return self.start_process("Monitor", ["python3", "db_redis/monitor_streams.py"], "96")
 
+    def get_stream_snapshot(self):
+        snapshot = {}
+        for stream in [VEHICLE_JOBS_STREAM, VEHICLE_RESULTS_STREAM, VEHICLE_ACK_STREAM]:
+            try:
+                info = self.r.xinfo_stream(stream)
+                groups_info = self.r.xinfo_groups(stream)
+                snapshot[stream] = {
+                    "messages": info.get("length", 0),
+                    "groups": groups_info,
+                }
+            except Exception:
+                snapshot[stream] = None
+        return snapshot
+
     def monitor_system(self):
         print(f"\n{'='*80}")
         print("SENTINEL SYSTEM RUNNING - Auto-Scaling Enabled")
@@ -363,6 +379,54 @@ class SentinelOrchestrator:
 
                 # Run Scaling
                 self.check_and_autoscale()
+
+                # per-process resource stats
+                now = time.time()
+                if now - self.last_resource_log_ts >= RESOURCE_LOG_INTERVAL:
+                    usage_parts = []
+                    for name, process in self.processes.items():
+                        if process.poll() is not None:
+                            continue
+                        try:
+                            p = psutil.Process(process.pid)
+                            cpu_pct = p.cpu_percent(interval=None)
+                            ram_mb = p.memory_info().rss / (1024 * 1024)
+                            usage_parts.append(f"{name}:CPU {cpu_pct:.1f}% RAM {ram_mb:.0f}MB")
+                        except Exception:
+                            continue
+
+                    stream_snapshot = self.get_stream_snapshot()
+                    worker_counts = (
+                        f"OCR: {len(self.worker_groups['ocr'])} "
+                        f"COLOR: {len(self.worker_groups['color'])} "
+                        f"LOGO: {len(self.worker_groups['logo'])} "
+                        f"VIOLATION: {len(self.worker_groups['violation'])}"
+                    )
+
+                    print(f"\n[Monitor] {worker_counts}")
+                    if usage_parts:
+                        print("[RES] " + " | ".join(usage_parts))
+
+                    print(f"[Monitor] Timestamp: {time.strftime('%H:%M:%S')}")
+                    print("[Monitor] " + "-" * 30)
+                    for stream_name, stream_data in stream_snapshot.items():
+                        if stream_data is None:
+                            print(f"[Monitor] {stream_name}: Stream does not exist")
+                            continue
+
+                        print(f"[Monitor] {stream_name}:")
+                        print(f"[Monitor]   Messages: {stream_data['messages']}")
+                        print(f"[Monitor]   Groups: {len(stream_data['groups'])}")
+
+                        for group in stream_data["groups"]:
+                            group_name = group.get("name", "unknown")
+                            pending = group.get("pending", 0)
+                            consumers = group.get("consumers", 0)
+                            print(
+                                f"[Monitor]     Group '{group_name}': {pending} pending, {consumers} consumers"
+                            )
+
+                    self.last_resource_log_ts = now
 
                 # Status Line
                 alive_count = len([p for p in self.processes.values() if p.poll() is None])
@@ -406,10 +470,6 @@ class SentinelOrchestrator:
         
         time.sleep(2)
         if not self.start_aggregator():
-            self.stop_all()
-            return False
-        
-        if not self.start_monitor():
             self.stop_all()
             return False
         

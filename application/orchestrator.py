@@ -16,16 +16,58 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
+
+def _env_int(name, default):
+    try:
+        return int(os.getenv(name, str(default)))
+    except Exception:
+        return default
+
+
+def _env_float(name, default):
+    try:
+        return float(os.getenv(name, str(default)))
+    except Exception:
+        return default
+
 # --- Configuration for Auto-Scaling ---
 SCALING_CONFIG = {
-    "ocr": {"min": 1, "max": 2, "threshold": 20, "script": "ocr/ocr_worker_paddle.py", "color": "92", "group": OCR_GROUP},
-    "color": {"min": 1, "max": 2, "threshold": 20, "script": "color_detection/color_worker.py", "color": "94", "group": COLOR_GROUP},
-    "logo": {"min": 1, "max": 2, "threshold": 20, "script": "logo_detection/logo_worker.py", "color": "95", "group": LOGO_GROUP},
-    "violation": {"min": 1, "max": 2, "threshold": 15, "script": "violation_detection/violation_worker.py", "color": "97", "group": VIOLATION_GROUP},
+    "ocr": {
+        "min": _env_int("OCR_MIN_WORKERS", 1),
+        "max": _env_int("OCR_MAX_WORKERS", 2),
+        "threshold": _env_int("OCR_SCALE_THRESHOLD", 20),
+        "script": "ocr/ocr_worker_paddle.py",
+        "color": "92",
+        "group": OCR_GROUP,
+    },
+    "color": {
+        "min": _env_int("COLOR_MIN_WORKERS", 1),
+        "max": _env_int("COLOR_MAX_WORKERS", 2),
+        "threshold": _env_int("COLOR_SCALE_THRESHOLD", 20),
+        "script": "color_detection/color_worker.py",
+        "color": "94",
+        "group": COLOR_GROUP,
+    },
+    "logo": {
+        "min": _env_int("LOGO_MIN_WORKERS", 1),
+        "max": _env_int("LOGO_MAX_WORKERS", 2),
+        "threshold": _env_int("LOGO_SCALE_THRESHOLD", 20),
+        "script": "logo_detection/logo_worker.py",
+        "color": "95",
+        "group": LOGO_GROUP,
+    },
+    "violation": {
+        "min": _env_int("VIOLATION_MIN_WORKERS", 1),
+        "max": _env_int("VIOLATION_MAX_WORKERS", 2),
+        "threshold": _env_int("VIOLATION_SCALE_THRESHOLD", 15),
+        "script": "violation_detection/violation_worker.py",
+        "color": "97",
+        "group": VIOLATION_GROUP,
+    },
 }
 
-MAX_CPU_PERCENT = 85.0
-MAX_RAM_PERCENT = 85.0
+MAX_CPU_PERCENT = _env_float("MAX_CPU_PERCENT", 85.0)
+MAX_RAM_PERCENT = _env_float("MAX_RAM_PERCENT", 85.0)
 
 class SentinelOrchestrator:
     def __init__(self):
@@ -175,6 +217,8 @@ class SentinelOrchestrator:
 
     def start_ingress_streams(self):
         print("\nStarting Ingress Workers...")
+        dev_mode = os.getenv("DEV_MODE", "0") == "1"
+        visual_mode = os.getenv("VISUAL_MODE", "0") == "1"
         for idx, stream_url in enumerate(self.rtsp_streams):
             stream_url = stream_url.strip()
             if not stream_url: continue
@@ -183,11 +227,12 @@ class SentinelOrchestrator:
             ingress_env = {
                 "LOCATION": self.location,
                 "RTSP_STREAM": stream_url,
-                "VISUAL_MODE": "0" 
+                "DEV_MODE": "1" if dev_mode else "0",
+                "VISUAL_MODE": "1" if dev_mode else "0"
             }
             
             # Allow visual only for first stream if enabled in env
-            if idx == 0 and os.getenv("VISUAL_MODE", "0") == "1":
+            if not dev_mode and idx == 0 and visual_mode:
                 ingress_env["VISUAL_MODE"] = "1"
 
             success = self.start_process(

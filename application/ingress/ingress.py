@@ -31,12 +31,14 @@ LOCATION = os.getenv("LOCATION", "DEFAULT_LOCATION")
 RTSP_URL = os.getenv("RTSP_STREAM")
 IS_FILE = str(RTSP_URL).strip().lower().endswith(".mp4")
 VISUAL_MODE_ENV = os.getenv("VISUAL_MODE", "0") == "1"
-# VISUAL_MODE = VISUAL_MODE_ENV
-VISUAL_MODE = True
+DEV_MODE = os.getenv("DEV_MODE", "0") == "1"
+VISUAL_MODE = DEV_MODE or VISUAL_MODE_ENV
 
 print(f"Ingress started for location: {LOCATION}")
 if VISUAL_MODE:
     print("Visual Debug Mode: ENABLED (Window will appear)")
+else:
+    print("Visual Debug Mode: DISABLED")
  
 if not RTSP_URL:
     print("Error: RTSP_STREAM not set in environment variables.")
@@ -356,9 +358,9 @@ try:
                     cv2.putText(frame, str(vis_ids[i]), (box[0], box[1]-10), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0,0,255), 2)
 
             display = cv2.resize(frame, (1280, 720))
-            # cv2.imshow("Sentinel Ingress", display)
-            # if cv2.waitKey(1) & 0xFF == ord('q'):
-            #     break
+            cv2.imshow("Sentinel Ingress", display)
+            if cv2.waitKey(1) & 0xFF == ord('q'):
+                break
 
 except KeyboardInterrupt:
     print("Stopping...")

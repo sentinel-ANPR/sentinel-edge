@@ -1,18 +1,6 @@
 #!/usr/bin/env python3
-"""
-OCR worker adapted to use the same OCR engine and processing flow as
-ItsThareesh/Calicut-Traffic-OCR (PaddleOCR + processing.py helpers).
-
-This version adds a multiline plate assembly helper (`assemble_multiline_plate`)
-to group per-token PaddleOCR detections into rows (top/bottom) so scooter
-(two-line) plates are handled correctly. For each preprocessing variant we:
- - collect tokens with x_center/y_center
- - assemble rows into a single candidate string per variant
- - apply correct_plate_text and rank_plate_candidates as before
-"""
 
 import os
-import re
 import time
 import signal
 import threading
@@ -93,36 +81,6 @@ def is_green_plate(image: np.ndarray) -> bool:
         return ratio > 0.3
     except Exception:
         return False
-
-def clean_and_sort_results_for_fallback(results):
-    """
-    Keep the original sentinel cleaning/sorting helper (if you ever need an OCR fallback that
-    uses the older RapidOCR-style output). This function is provided for parity but not used
-    by the primary PaddleOCR path.
-    """
-    if not results:
-        return None
-
-    def sort_key(res):
-        box = res[0]
-        x_left = box[0][0]
-        y_top = box[0][1]
-        line_bucket = int(y_top // 20)
-        return (line_bucket, x_left)
-
-    sorted_results = sorted(results, key=sort_key)
-
-    final_text_parts = []
-    for res in sorted_results:
-        text = res[1]
-        clean_part = re.sub(r'[^A-Z0-9]', '', text.upper())
-        if clean_part in ["IND", "IN", "ND"]:
-            continue
-        if clean_part.startswith("IND") and len(clean_part) > 3:
-            clean_part = clean_part[3:]
-        final_text_parts.append(clean_part)
-
-    return "".join(final_text_parts)
 
 def run_paddle_on_variant(variant_img: np.ndarray) -> List[Dict[str, Any]]:
     """

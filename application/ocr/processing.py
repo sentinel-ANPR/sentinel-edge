@@ -45,33 +45,6 @@ def preprocess_plate(plate):
         "Otsu Threshold": cv2.cvtColor(otsu, cv2.COLOR_GRAY2RGB),
     }
 
-def show_preprocessing(stages):
-    n = len(stages)
-    plt.figure(figsize=(15, 3))
-
-    for i, (name, img) in enumerate(stages.items()):
-        plt.subplot(1, n, i + 1)
-        plt.title(name)
-        plt.axis("off")
-
-        if len(img.shape) == 2:
-            plt.imshow(img, cmap="gray")
-        else:
-            plt.imshow(cv2.cvtColor(img, cv2.COLOR_BGR2RGB))
-
-    plt.tight_layout()
-    plt.show()
-
-
-INDIAN_PLATE_FORMATS = [
-    r'^[A-Z]{2}\d{2}[A-Z]{1,2}\d{4}$',        # Standard: KL11AS2509
-    r'^\d{2}BH\d{4}[A-Z]{2}$',                # Bharat Series: 22BH1234AB
-    r'^[A-Z]{2}\d{2}[A-Z]\d{4}$',             # Old format: KL01A1234
-    r'^[A-Z]{2}\d{2}EV\d{4}$',                # Electric Vehicle: KL11EV1234 (green plates)
-    r'^[A-Z]{2}\d{2}C\d{4}$',                 # Commercial: KL11C1234
-    r'^[A-Z]{2}\d{2}T\d{4}$',                 # Taxi: KL11T1234
-]
-
 def is_valid_indian_plate(text: str) -> bool:
     """
     Check if text matches valid Indian license plate format.

@@ -8,7 +8,7 @@ import argparse
 
 
 # Paths
-MEDIA_FILE = "cropped.mp4"
+MEDIA_FILE = "in1.mp4"
 MEDIAMTX_BINARY = "./mediamtx"  # path to MediaMTX binary
 RTSP_URL = "rtsp://127.0.0.1:8554/stream"
 

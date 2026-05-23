@@ -7,6 +7,11 @@ from ultralytics import YOLO
 from pathlib import Path
 from db_redis.sentinel_redis_config import *
 from model_config import resolve_model_path
+from telemetry import (
+    observe_worker_latency,
+    record_reclaim,
+    record_worker_result,
+)
 
 shutdown_event = threading.Event()
 
@@ -133,11 +138,18 @@ def logo_worker():
     
     while not shutdown_event.is_set():
         try:
-            messages = r.xreadgroup(
-                LOGO_GROUP, worker_id,
-                {VEHICLE_JOBS_STREAM: ">"}, 
-                count=1, block=BLOCK_TIME
+            reclaimed = reclaim_pending_messages(
+                r, LOGO_GROUP, worker_id, VEHICLE_JOBS_STREAM, ACK_TIMEOUT
             )
+            if reclaimed:
+                record_reclaim(VEHICLE_JOBS_STREAM, LOGO_GROUP, len(reclaimed))
+                messages = [(VEHICLE_JOBS_STREAM, reclaimed)]
+            else:
+                messages = r.xreadgroup(
+                    LOGO_GROUP, worker_id,
+                    {VEHICLE_JOBS_STREAM: ">"}, 
+                    count=1, block=BLOCK_TIME
+                )
             
             if not messages:
                 continue
@@ -154,37 +166,46 @@ def logo_worker():
                     
                     if should_worker_process("logo", vehicle_type):
                         try:
+                            start_ts = time.time()
                             make, logo_path = process_logo(frame_path, vehicle_id)
                             
-                            r.xadd(VEHICLE_RESULTS_STREAM, {
+                            payload = {
                                 "job_id": job_id,
                                 "vehicle_id": vehicle_id,
+                                "job_msg_id": msg_id,
                                 "worker": "logo",
                                 "result": make,  # car make/brand name
                                 "logo_path": logo_path if logo_path else "N/A",  # path to cropped logo
                                 "status": "ok",
                                 "frame_path": frame_path, 
                                 "plate_path": plate_path  
-                            })
+                            }
+                            r.xadd(VEHICLE_RESULTS_STREAM, payload)
                             print(f"[Logo] Completed: {job_id} -> {make}")
                             if logo_path:
                                 print(f"[Logo] Logo saved at: {logo_path}")
                             r.xack(VEHICLE_JOBS_STREAM, LOGO_GROUP, msg_id)
+                            observe_worker_latency("logo", time.time() - start_ts)
+                            record_worker_result("logo", "ok", vehicle_type)
                         except Exception as e:
                             print(f"[Logo] Failed for {job_id}: {e}")
-                            r.xadd(VEHICLE_RESULTS_STREAM, {
+                            error_payload = {
                                 "job_id": job_id,
                                 "vehicle_id": vehicle_id,
+                                "job_msg_id": msg_id,
                                 "worker": "logo",
                                 "result": "Unknown",
                                 "logo_path": "N/A",
                                 "status": "error",
                                 "error": str(e)
-                            })
+                            }
+                            r.xadd(VEHICLE_RESULTS_STREAM, error_payload)
                             r.xack(VEHICLE_JOBS_STREAM, LOGO_GROUP, msg_id)
+                            record_worker_result("logo", "error", vehicle_type)
                     else:
                         print(f"[Logo] Skipping {vehicle_type} (not in scope)")
                         r.xack(VEHICLE_JOBS_STREAM, LOGO_GROUP, msg_id)
+                        record_worker_result("logo", "skipped", vehicle_type)
                         
         except Exception as e:
             print(f"[Logo] Worker error: {e}")

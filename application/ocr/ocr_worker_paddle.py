@@ -15,6 +15,11 @@ import logging
 from db_redis.sentinel_redis_config import *
 from plate_detection import detect_plate_crops
 from model_config import resolve_model_path
+from telemetry import (
+    observe_worker_latency,
+    record_reclaim,
+    record_worker_result,
+)
 
 from processing import preprocess_plate, correct_plate_text, rank_plate_candidates, is_valid_indian_plate
 
@@ -477,11 +482,18 @@ def ocr_worker():
 
     while not shutdown_event.is_set():
         try:
-            messages = r.xreadgroup(
-                OCR_GROUP, worker_id,
-                {VEHICLE_JOBS_STREAM: ">"}, 
-                count=1, block=BLOCK_TIME
+            reclaimed = reclaim_pending_messages(
+                r, OCR_GROUP, worker_id, VEHICLE_JOBS_STREAM, ACK_TIMEOUT
             )
+            if reclaimed:
+                record_reclaim(VEHICLE_JOBS_STREAM, OCR_GROUP, len(reclaimed))
+                messages = [(VEHICLE_JOBS_STREAM, reclaimed)]
+            else:
+                messages = r.xreadgroup(
+                    OCR_GROUP, worker_id,
+                    {VEHICLE_JOBS_STREAM: ">"}, 
+                    count=1, block=BLOCK_TIME
+                )
 
             if not messages:
                 continue
@@ -497,40 +509,49 @@ def ocr_worker():
 
                     if should_worker_process("ocr", vehicle_type):
                         try:
+                            start_ts = time.time()
                             result = process_ocr(frame_path, plate_path)
 
                             # send result (preserve exact sentinel fields)
-                            r.xadd(VEHICLE_RESULTS_STREAM, {
+                            payload = {
                                 "job_id": job_id,
                                 "vehicle_id": fields.get("vehicle_id"),
+                                "job_msg_id": msg_id,
                                 "worker": "ocr",
                                 "result": result,
                                 "status": "ok",
                                 "frame_path": frame_path,
                                 "plate_path": plate_path
-                            })
+                            }
+                            r.xadd(VEHICLE_RESULTS_STREAM, payload)
 
                             # Log clearly
                             log_res = result if result != "N/A" else "N/A"
                             print(f"[OCR] Completed: {job_id} -> {log_res}")
 
                             r.xack(VEHICLE_JOBS_STREAM, OCR_GROUP, msg_id)
+                            observe_worker_latency("ocr", time.time() - start_ts)
+                            record_worker_result("ocr", "ok", vehicle_type)
 
                         except Exception as e:
                             logging.exception("OCR worker failure for job %s: %s", job_id, e)
-                            r.xadd(VEHICLE_RESULTS_STREAM, {
+                            error_payload = {
                                 "job_id": job_id,
                                 "worker": "ocr",
                                 "result": "N/A",
                                 "status": "error",
                                 "error": str(e),
+                                "job_msg_id": msg_id,
                                 "frame_path": frame_path,
                                 "plate_path": plate_path
-                            })
+                            }
+                            r.xadd(VEHICLE_RESULTS_STREAM, error_payload)
                             r.xack(VEHICLE_JOBS_STREAM, OCR_GROUP, msg_id)
+                            record_worker_result("ocr", "error", vehicle_type)
                     else:
                         print(f"[OCR] Skipping {vehicle_type} (not in scope)")
                         r.xack(VEHICLE_JOBS_STREAM, OCR_GROUP, msg_id)
+                        record_worker_result("ocr", "skipped", vehicle_type)
 
         except Exception as e:
             logging.exception("OCR Worker error: %s", e)

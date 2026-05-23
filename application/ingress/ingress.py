@@ -13,6 +13,7 @@ import pytz
 from vidgear.gears import CamGear
 from plate_detection import detect_plate_crops
 from model_config import resolve_model_path
+from telemetry import record_job_created
 
 IST = pytz.timezone('Asia/Kolkata')
 
@@ -263,7 +264,7 @@ def publish_job(vehicle_type, organized_path, relative_path, track_id, vehicle_i
     """Publish job with organized file paths"""
     timestamp = datetime.datetime.now(IST)
     job_id = f"{vehicle_type}_{track_id}_{vehicle_id.split('_')[0]}"  
-    
+
     payload = {
         "job_id": job_id,
         "vehicle_id": vehicle_id, 
@@ -275,8 +276,9 @@ def publish_job(vehicle_type, organized_path, relative_path, track_id, vehicle_i
         "timestamp": timestamp.isoformat(),
         "location": LOCATION
     }
-    
+
     r.xadd(VEHICLE_JOBS_STREAM, payload)
+    record_job_created(LOCATION, vehicle_type)
     print(f"Published job: {job_id} (Vehicle ID: {vehicle_id}) @ {LOCATION}")
     print(f"  Keyframe stored: {relative_path}")
 

@@ -10,6 +10,11 @@ from sklearn.cluster import KMeans
 from ultralytics import YOLO
 from db_redis.sentinel_redis_config import *
 from model_config import resolve_model_path
+from telemetry import (
+    observe_worker_latency,
+    record_reclaim,
+    record_worker_result,
+)
 
 YOLO_MODEL_PATH = resolve_model_path("MODEL_COLOR_PATH", "models/colour-yolo.pt")
 
@@ -139,11 +144,18 @@ def color_worker():
 
     while not shutdown_event.is_set():
         try:
-            messages = r.xreadgroup(
-                COLOR_GROUP, worker_id,
-                {VEHICLE_JOBS_STREAM: ">"}, 
-                count=1, block=BLOCK_TIME
+            reclaimed = reclaim_pending_messages(
+                r, COLOR_GROUP, worker_id, VEHICLE_JOBS_STREAM, ACK_TIMEOUT
             )
+            if reclaimed:
+                record_reclaim(VEHICLE_JOBS_STREAM, COLOR_GROUP, len(reclaimed))
+                messages = [(VEHICLE_JOBS_STREAM, reclaimed)]
+            else:
+                messages = r.xreadgroup(
+                    COLOR_GROUP, worker_id,
+                    {VEHICLE_JOBS_STREAM: ">"}, 
+                    count=1, block=BLOCK_TIME
+                )
             
             if not messages:
                 continue
@@ -160,35 +172,44 @@ def color_worker():
                     if should_worker_process("color", vehicle_type):
                         try:
                             # PASS YOLO MODEL TO FUNCTION
+                            start_ts = time.time()
                             color_name, hex_code = process_color(frame_path, yolo)
                             
                             result = f"{color_name}|{hex_code}"
                             
-                            r.xadd(VEHICLE_RESULTS_STREAM, {
+                            payload = {
                                 "job_id": job_id,
                                 "vehicle_id": fields.get("vehicle_id"),
+                                "job_msg_id": msg_id,
                                 "worker": "color",
                                 "result": result,
                                 "status": "ok",
                                 "frame_path": frame_path,  
                                 "plate_path": plate_path 
-                            })
+                            }
+                            r.xadd(VEHICLE_RESULTS_STREAM, payload)
                             print(f"[Color] Completed: {job_id} -> {color_name} ({hex_code})")
                             r.xack(VEHICLE_JOBS_STREAM, COLOR_GROUP, msg_id)
+                            observe_worker_latency("color", time.time() - start_ts)
+                            record_worker_result("color", "ok", vehicle_type)
                         except Exception as e:
                             print(f"[Color] Failed for {job_id}: {e}")
-                            r.xadd(VEHICLE_RESULTS_STREAM, {
+                            error_payload = {
                                 "job_id": job_id,
                                 "vehicle_id": fields.get("vehicle_id"),
+                                "job_msg_id": msg_id,
                                 "worker": "color",
                                 "result": "unknown|#000000",
                                 "status": "error",
                                 "error": str(e)
-                            })
+                            }
+                            r.xadd(VEHICLE_RESULTS_STREAM, error_payload)
                             r.xack(VEHICLE_JOBS_STREAM, COLOR_GROUP, msg_id)
+                            record_worker_result("color", "error", vehicle_type)
                     else:
                         print(f"[Color] Skipping {vehicle_type} (cars only)")
                         r.xack(VEHICLE_JOBS_STREAM, COLOR_GROUP, msg_id)
+                        record_worker_result("color", "skipped", vehicle_type)
         
         except Exception as e:
             print(f"[Color] Worker error: {e}")

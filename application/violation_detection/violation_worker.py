@@ -6,6 +6,11 @@ import os
 from ultralytics import YOLO
 from db_redis.sentinel_redis_config import *
 from model_config import resolve_model_path
+from telemetry import (
+    observe_worker_latency,
+    record_reclaim,
+    record_worker_result,
+)
 
 shutdown_event = threading.Event()
 
@@ -193,11 +198,18 @@ def violation_worker():
     while not shutdown_event.is_set():
         try:
             # Read from Redis Stream
-            messages = r.xreadgroup(
-                VIOLATION_GROUP, worker_id, 
-                {VEHICLE_JOBS_STREAM: ">"}, 
-                count=1, block=BLOCK_TIME
+            reclaimed = reclaim_pending_messages(
+                r, VIOLATION_GROUP, worker_id, VEHICLE_JOBS_STREAM, ACK_TIMEOUT
             )
+            if reclaimed:
+                record_reclaim(VEHICLE_JOBS_STREAM, VIOLATION_GROUP, len(reclaimed))
+                messages = [(VEHICLE_JOBS_STREAM, reclaimed)]
+            else:
+                messages = r.xreadgroup(
+                    VIOLATION_GROUP, worker_id, 
+                    {VEHICLE_JOBS_STREAM: ">"}, 
+                    count=1, block=BLOCK_TIME
+                )
             
             if not messages:
                 continue
@@ -215,36 +227,45 @@ def violation_worker():
                     if should_worker_process("violation", vehicle_type):
                         try:
                             # Get Integer Code
+                            start_ts = time.time()
                             v_code = get_violation_code(frame_path)
                             
                             # Publish Result
                             # Send 'result' as string for consistency, but the payload contains the code
-                            r.xadd(VEHICLE_RESULTS_STREAM, {
+                            payload = {
                                 "job_id": job_id,
                                 "vehicle_id": vehicle_id,
+                                "job_msg_id": msg_id,
                                 "worker": "violation",
                                 "result": str(v_code),
                                 "status": "ok",
                                 "frame_path": frame_path, 
                                 "plate_path": plate_path  
-                            })
+                            }
+                            r.xadd(VEHICLE_RESULTS_STREAM, payload)
                             
                             r.xack(VEHICLE_JOBS_STREAM, VIOLATION_GROUP, msg_id)
+                            observe_worker_latency("violation", time.time() - start_ts)
+                            record_worker_result("violation", "ok", vehicle_type)
                             
                         except Exception as e:
                             print(f"[Violation] Failed for {job_id}: {e}")
                             # send 0 on error to avoid blocking the aggregator
-                            r.xadd(VEHICLE_RESULTS_STREAM, {
+                            error_payload = {
                                 "job_id": job_id,
                                 "vehicle_id": vehicle_id,
+                                "job_msg_id": msg_id,
                                 "worker": "violation",
                                 "result": "0",
                                 "status": "error"
-                            })
+                            }
+                            r.xadd(VEHICLE_RESULTS_STREAM, error_payload)
                             r.xack(VEHICLE_JOBS_STREAM, VIOLATION_GROUP, msg_id)
+                            record_worker_result("violation", "error", vehicle_type)
                     else:
                         print(f"[Violation] Skipping {vehicle_type}")
                         r.xack(VEHICLE_JOBS_STREAM, VIOLATION_GROUP, msg_id)
+                        record_worker_result("violation", "skipped", vehicle_type)
                         
         except Exception as e:
             print(f"[Violation] Worker loop error: {e}")

@@ -13,8 +13,9 @@ import gc
 from aggregator import ResultAggregator
 from db_redis.sentinel_redis_config import *
 from dotenv import load_dotenv
-
 load_dotenv()
+
+from telemetry import start_metrics_pusher, update_redis_metrics
 
 
 def _env_int(name, default):
@@ -118,12 +119,14 @@ class SentinelOrchestrator:
     def cleanup_redis(self):
         print("Cleaning up Redis streams...")
         try:
-            streams = [VEHICLE_JOBS_STREAM, VEHICLE_RESULTS_STREAM, VEHICLE_ACK_STREAM]
-            for stream in streams:
-                try:
-                    self.r.delete(stream)
-                except Exception:
-                    pass
+            reset_redis = os.getenv("RESET_REDIS", "0") == "1"
+            if reset_redis:
+                streams = [VEHICLE_JOBS_STREAM, VEHICLE_RESULTS_STREAM, VEHICLE_ACK_STREAM]
+                for stream in streams:
+                    try:
+                        self.r.delete(stream)
+                    except Exception:
+                        pass
             
             consumer_groups = {
                 VEHICLE_JOBS_STREAM: [OCR_GROUP, COLOR_GROUP, LOGO_GROUP, VIOLATION_GROUP],
@@ -426,6 +429,8 @@ class SentinelOrchestrator:
                                 f"[Monitor]     Group '{group_name}': {pending} pending, {consumers} consumers"
                             )
 
+                    update_redis_metrics(stream_snapshot)
+
                     self.last_resource_log_ts = now
 
                 # Status Line
@@ -456,6 +461,8 @@ class SentinelOrchestrator:
     def run(self):
         print("SENTINEL SYSTEM ORCHESTRATOR")
         print("=" * 80)
+
+        start_metrics_pusher()
 
         if not self.start_heartbeat(): return False
         if not self.cleanup_redis(): return False

@@ -18,10 +18,18 @@ def monitor_streams():
             print("-" * 30)
             
             # Monitor each stream
-            for stream in [VEHICLE_JOBS_STREAM, VEHICLE_RESULTS_STREAM, VEHICLE_ACK_STREAM]:
+            for stream in [
+                VEHICLE_JOBS_STREAM,
+                VEHICLE_RESULTS_STREAM,
+                VEHICLE_RESULTS_DEAD_STREAM,
+                VEHICLE_ACK_STREAM,
+            ]:
                 try:
                     info = r.xinfo_stream(stream)
-                    groups_info = r.xinfo_groups(stream)
+                    try:
+                        groups_info = r.xinfo_groups(stream)
+                    except Exception:
+                        groups_info = []
                     
                     print(f"{stream}:")
                     print(f"  Messages: {info['length']}")

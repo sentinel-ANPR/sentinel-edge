@@ -17,6 +17,10 @@ from telemetry import (
     record_upload_latency,
 )
 
+RESULT_MAX_RETRIES = int(os.getenv("RESULT_MAX_RETRIES", "5"))
+DEAD_TTL_SECONDS = DEAD_TTL_HOURS * 3600
+DEAD_CLEANUP_INTERVAL_SECONDS = int(os.getenv("DEAD_CLEANUP_INTERVAL_SECONDS", "600"))
+
 # set timezone to IST
 os.environ["TZ"] = "Asia/Kolkata"
 if sys.platform != "win32":
@@ -31,6 +35,7 @@ class ResultAggregator:
         self.central_url = os.getenv("CENTRAL_API_URL")
         self.location = os.getenv("LOCATION", "UNKNOWN")
         self.job_timeout_sec = JOB_TIMEOUT_SEC
+        self.last_dead_cleanup_ts = 0.0
 
     def log_agg(self, message):
         YELLOW = "\033[93m"
@@ -74,14 +79,14 @@ class ResultAggregator:
         # upload physical binary files to the central server
         if not self.central_url:
             self.log_agg("CENTRAL_API_URL not configured")
-            return False
+            return False, "central_url_not_configured"
 
         endpoint = f"{self.central_url}/api/ingest/vehicle-complete"
         
         # validation: frame_path is mandatory for upload 
         if not frame_path or frame_path in ["None", "", b"None"]:
             self.log_agg(f"No valid frame path for {job_data['vehicle_id']}")
-            return False
+            return False, "missing_frame_path"
 
         files = {}
         upload_start = time.time()
@@ -120,21 +125,145 @@ class ResultAggregator:
                 self.log_agg(f"Success: {job_data['vehicle_id']}")
                 # remove files from disk
                 self.cleanup_files(frame_path, plate_path, logo_path)
-                return True
-            return False
+                return True, None
+            return False, f"http_status_{response.status_code}"
 
         except Exception as e:
             record_upload_latency(self.location, time.time() - upload_start, False)
             self.log_agg(f"Upload failed: {e}")
-            return False
+            return False, str(e)
         finally:
             for f in files.values(): f.close()
+
+    def _dead_entry_epoch_ms(self, entry_id, fields):
+        dead_ts = fields.get("dead_ts")
+        if dead_ts:
+            try:
+                return int(float(dead_ts) * 1000)
+            except Exception:
+                pass
+        try:
+            return int(str(entry_id).split("-")[0])
+        except Exception:
+            return None
+
+    def _parse_results_payload(self, payload):
+        raw = payload.get("results")
+        if not raw:
+            return {}
+        try:
+            parsed = json.loads(raw)
+            return parsed if isinstance(parsed, dict) else {}
+        except Exception:
+            return {}
+
+    def _build_job_data(self, job_id, vehicle_id, vehicle_type, timestamp, results):
+        res = self.fill_missing_results(vehicle_type, results)
+        c_name, c_hex = self.parse_color_result(res.get("color", "unknown|#000000"))
+        return {
+            "vehicle_id": vehicle_id,
+            "vehicle_type": vehicle_type,
+            "vehicle_number": res.get("ocr", "N/A"),
+            "color": c_name,
+            "color_hex": c_hex,
+            "model": res.get("logo", "Unknown"),
+            "violation_type": int(res.get("violation", 0)),
+            "timestamp": timestamp or datetime.datetime.now().isoformat(),
+        }
+
+    def replay_dead_letters_once(self):
+        try:
+            entries = self.r.xrange(VEHICLE_RESULTS_DEAD_STREAM, min='-', max='+', count=200)
+        except Exception as e:
+            self.log_agg(f"Dead-letter replay skipped: {e}")
+            return
+
+        if not entries:
+            return
+
+        for entry_id, fields in entries:
+            replayed = fields.get("replay_attempted")
+            if replayed == "1":
+                continue
+
+            job_id = fields.get("job_id")
+            vehicle_id = fields.get("vehicle_id")
+            vehicle_type = fields.get("vehicle_type")
+            if not vehicle_type and job_id:
+                vehicle_type = job_id.split("_")[0]
+
+            results = self._parse_results_payload(fields)
+            job_data = self._build_job_data(
+                job_id,
+                vehicle_id,
+                vehicle_type or "unknown",
+                fields.get("timestamp"),
+                results,
+            )
+            success, err = self.report_to_central(
+                job_data,
+                fields.get("frame_path"),
+                fields.get("plate_path"),
+                fields.get("logo_path"),
+            )
+            if success:
+                try:
+                    self.r.xdel(VEHICLE_RESULTS_DEAD_STREAM, entry_id)
+                except Exception:
+                    pass
+                continue
+
+            try:
+                self.r.xadd(
+                    VEHICLE_RESULTS_DEAD_STREAM,
+                    {
+                        "job_id": job_id or "unknown",
+                        "vehicle_id": vehicle_id or "unknown",
+                        "vehicle_type": vehicle_type or "unknown",
+                        "timestamp": fields.get("timestamp") or "",
+                        "error": err or "replay_failed",
+                        "frame_path": fields.get("frame_path") or "",
+                        "plate_path": fields.get("plate_path") or "",
+                        "logo_path": fields.get("logo_path") or "N/A",
+                        "results": json.dumps(results),
+                        "replay_attempted": "1",
+                        "dead_ts": fields.get("dead_ts") or str(time.time()),
+                    },
+                )
+                self.r.xdel(VEHICLE_RESULTS_DEAD_STREAM, entry_id)
+            except Exception as e:
+                self.log_agg(f"Dead-letter replay update failed for {job_id}: {e}")
+
+    def purge_dead_letters(self):
+        now_ms = int(time.time() * 1000)
+        ttl_ms = DEAD_TTL_SECONDS * 1000
+        try:
+            entries = self.r.xrange(VEHICLE_RESULTS_DEAD_STREAM, min='-', max='+', count=500)
+        except Exception:
+            return
+
+        if not entries:
+            return
+
+        for entry_id, fields in entries:
+            entry_ms = self._dead_entry_epoch_ms(entry_id, fields)
+            if entry_ms is None:
+                continue
+            if now_ms - entry_ms >= ttl_ms:
+                try:
+                    self.r.xdel(VEHICLE_RESULTS_DEAD_STREAM, entry_id)
+                except Exception:
+                    pass
 
     def process_results(self):
         self.log_agg(f"Edge Aggregator started for {self.location}")
         try:
             self.r.xgroup_create(VEHICLE_RESULTS_STREAM, AGGREGATOR_GROUP, id="0", mkstream=True)
         except: pass
+
+        self.purge_dead_letters()
+        self.replay_dead_letters_once()
+        self.last_dead_cleanup_ts = time.time()
 
         while True:
             try:
@@ -160,7 +289,13 @@ class ResultAggregator:
                         worker = f.get("worker")
                         result = f.get("result")
                         
-                        if not job_id: continue
+                        if not job_id:
+                            try:
+                                self.r.xack(VEHICLE_RESULTS_STREAM, AGGREGATOR_GROUP, msg_id)
+                                self.r.xdel(VEHICLE_RESULTS_STREAM, msg_id)
+                            except Exception:
+                                pass
+                            continue
 
                         # take frame_path, plate_path, and logo_path from the redis message.
                         if job_id not in self.pending_jobs:
@@ -173,7 +308,9 @@ class ResultAggregator:
                                 "logo_path": None,
                                 "timestamp": f.get("timestamp") or datetime.datetime.now().isoformat(),
                                 "created_ts": time.time(),
-                                "job_msg_id": f.get("job_msg_id")
+                                "job_msg_id": f.get("job_msg_id"),
+                                "upload_retries": 0,
+                                "last_error": None
                             }
                         elif f.get("job_msg_id"):
                             self.pending_jobs[job_id]["job_msg_id"] = f.get("job_msg_id")
@@ -218,12 +355,13 @@ class ResultAggregator:
                             }
 
                             # upload using the absolute paths stored in memory
-                            if self.report_to_central(
+                            success, err = self.report_to_central(
                                 job_data, 
                                 self.pending_jobs[job_id]["frame_path"], 
                                 self.pending_jobs[job_id]["plate_path"],
                                 self.pending_jobs[job_id].get("logo_path")
-                            ):
+                            )
+                            if success:
                                 record_job_completed(
                                     self.location,
                                     v_type,
@@ -239,6 +377,56 @@ class ResultAggregator:
                                 if job_msg_id:
                                     self.r.xdel(VEHICLE_JOBS_STREAM, job_msg_id)
                                 del self.pending_jobs[job_id]
+                            else:
+                                self.pending_jobs[job_id]["upload_retries"] += 1
+                                self.pending_jobs[job_id]["last_error"] = err
+                                if self.pending_jobs[job_id]["upload_retries"] >= RESULT_MAX_RETRIES:
+                                    dead_payload = {
+                                        "job_id": job_id,
+                                        "vehicle_id": self.pending_jobs[job_id]["vehicle_id"],
+                                        "vehicle_type": v_type,
+                                        "timestamp": self.pending_jobs[job_id]["timestamp"],
+                                        "error": err or "upload_failed",
+                                        "frame_path": self.pending_jobs[job_id]["frame_path"],
+                                        "plate_path": self.pending_jobs[job_id]["plate_path"],
+                                        "logo_path": self.pending_jobs[job_id].get("logo_path") or "N/A",
+                                        "results": json.dumps(self.pending_jobs[job_id]["results"]),
+                                        "retries": self.pending_jobs[job_id]["upload_retries"],
+                                        "dead_ts": str(time.time()),
+                                        "replay_attempted": "0"
+                                    }
+                                    try:
+                                        self.r.xadd(VEHICLE_RESULTS_DEAD_STREAM, dead_payload)
+                                    except Exception as e:
+                                        self.log_agg(f"Failed to dead-letter {job_id}: {e}")
+
+                                    result_ids = list(self.pending_jobs[job_id]["result_ids"])
+                                    if result_ids:
+                                        try:
+                                            self.r.xack(VEHICLE_RESULTS_STREAM, AGGREGATOR_GROUP, *result_ids)
+                                        except Exception:
+                                            pass
+                                        for _id in result_ids:
+                                            try:
+                                                self.r.xdel(VEHICLE_RESULTS_STREAM, _id)
+                                            except Exception:
+                                                pass
+
+                                    job_msg_id = self.pending_jobs[job_id].get("job_msg_id")
+                                    if job_msg_id:
+                                        try:
+                                            self.r.xdel(VEHICLE_JOBS_STREAM, job_msg_id)
+                                        except Exception:
+                                            pass
+                                    self.log_agg(
+                                        f"Dead-lettered {job_id} after {RESULT_MAX_RETRIES} attempts"
+                                    )
+                                    del self.pending_jobs[job_id]
+
+                now = time.time()
+                if now - self.last_dead_cleanup_ts >= DEAD_CLEANUP_INTERVAL_SECONDS:
+                    self.purge_dead_letters()
+                    self.last_dead_cleanup_ts = now
 
             except Exception as e:
                 self.log_agg(f"Error: {e}")

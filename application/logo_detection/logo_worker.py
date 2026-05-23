@@ -197,7 +197,9 @@ def logo_worker():
                                 "result": "Unknown",
                                 "logo_path": "N/A",
                                 "status": "error",
-                                "error": str(e)
+                                "error": str(e),
+                                "frame_path": frame_path,
+                                "plate_path": plate_path
                             }
                             r.xadd(VEHICLE_RESULTS_STREAM, error_payload)
                             r.xack(VEHICLE_JOBS_STREAM, LOGO_GROUP, msg_id)

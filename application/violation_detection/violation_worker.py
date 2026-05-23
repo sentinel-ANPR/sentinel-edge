@@ -257,7 +257,9 @@ def violation_worker():
                                 "job_msg_id": msg_id,
                                 "worker": "violation",
                                 "result": "0",
-                                "status": "error"
+                                "status": "error",
+                                "frame_path": frame_path,
+                                "plate_path": plate_path
                             }
                             r.xadd(VEHICLE_RESULTS_STREAM, error_payload)
                             r.xack(VEHICLE_JOBS_STREAM, VIOLATION_GROUP, msg_id)

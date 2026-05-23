@@ -201,7 +201,9 @@ def color_worker():
                                 "worker": "color",
                                 "result": "unknown|#000000",
                                 "status": "error",
-                                "error": str(e)
+                                "error": str(e),
+                                "frame_path": frame_path,
+                                "plate_path": plate_path
                             }
                             r.xadd(VEHICLE_RESULTS_STREAM, error_payload)
                             r.xack(VEHICLE_JOBS_STREAM, COLOR_GROUP, msg_id)

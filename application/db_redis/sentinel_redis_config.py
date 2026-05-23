@@ -16,6 +16,7 @@ def get_redis_connection():
 # Stream Names
 VEHICLE_JOBS_STREAM = "vehicle_jobs"
 VEHICLE_RESULTS_STREAM = "vehicle_results"
+VEHICLE_RESULTS_DEAD_STREAM = "vehicle_results_dead"
 VEHICLE_ACK_STREAM = "vehicle_ack"
 
 # Consumer Groups
@@ -33,6 +34,7 @@ ACK_TIMEOUT = 30000      # ms before reclaim (30 seconds)
 MAX_RETRIES = 3
 JOB_TIMEOUT_SEC = int(os.getenv("JOB_TIMEOUT_SEC", "60"))
 RECLAIM_BATCH = int(os.getenv("RECLAIM_BATCH", "10"))
+DEAD_TTL_HOURS = int(os.getenv("DEAD_TTL_HOURS", "12"))
 
 # Worker Types
 WORKER_TYPES = {

@@ -117,16 +117,27 @@ tracer = None
 def _push_once() -> None:
     if not PROM_ENABLED or not PUSHGATEWAY_URL:
         return
-    push_to_gateway(
-        PUSHGATEWAY_URL,
-        job=PROM_JOB_NAME,
-        registry=registry,
-        grouping_key={"instance": PROM_INSTANCE},
-    )
+    try:
+        push_to_gateway(
+            PUSHGATEWAY_URL,
+            job=PROM_JOB_NAME,
+            registry=registry,
+            grouping_key={"instance": PROM_INSTANCE},
+        )
+        print(
+            f"[Prometheus] pushed edge metrics to {PUSHGATEWAY_URL} "
+            f"job={PROM_JOB_NAME} instance={PROM_INSTANCE}"
+        )
+    except Exception as exc:
+        print(
+            f"[Prometheus] push failed to {PUSHGATEWAY_URL} "
+            f"job={PROM_JOB_NAME} instance={PROM_INSTANCE}: {exc}"
+        )
 
 
 def start_metrics_pusher() -> bool:
     if not PROM_ENABLED or not PUSHGATEWAY_URL:
+        print("[Prometheus] edge metrics pusher disabled (missing prometheus_client or PUSHGATEWAY_URL)")
         return False
 
     def _loop():
@@ -136,6 +147,10 @@ def start_metrics_pusher() -> bool:
 
     thread = threading.Thread(target=_loop, daemon=True)
     thread.start()
+    print(
+        f"[Prometheus] edge metrics pusher started -> {PUSHGATEWAY_URL} "
+        f"every {PROM_PUSH_INTERVAL}s"
+    )
     return True
 
 

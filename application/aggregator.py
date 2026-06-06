@@ -15,6 +15,8 @@ from telemetry import (
     record_job_timeout,
     record_reclaim,
     record_upload_latency,
+    edge_jobs_timeout_total,
+    record_job_created
 )
 
 RESULT_MAX_RETRIES = int(os.getenv("RESULT_MAX_RETRIES", "5"))

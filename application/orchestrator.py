@@ -27,6 +27,11 @@ class SentinelOrchestrator:
         self.location = os.getenv("LOCATION", "DEFAULT_LOCATION")
         self.rtsp_stream = os.getenv("RTSP_STREAM")
         
+        # For Licensing 
+        self.is_sleeping = False     
+        self.node_id = os.getenv("NODE_ID", "UNNAMED_NODE")
+
+        
         if not self.rtsp_stream or self.rtsp_stream.strip() == "":
             print("\nERROR: RTSP_STREAM not found in .env")
             sys.exit(1)
@@ -35,17 +40,31 @@ class SentinelOrchestrator:
         print(f"RTSP Stream: {self.rtsp_stream}")
 
     def start_heartbeat(self):
-        """Background thread to tell Central Server we are alive."""
+        """Background thread to tell Central Server we are alive and manage sleep states."""
         def heartbeat_loop():
             while True:
                 try:
                     # Ping the central monitoring endpoint
-                    requests.post(
+                    response = requests.post(
                         f"{self.central_url}/api/monitor/heartbeat", 
-                        json={"node_id": self.node_id}, 
+                        # Updated payload to match your server.py expectations
+                        json={"node_id": self.node_id, "location": self.location, "status": "active"}, 
                         timeout=5
                     )
+                    
+                    if response.status_code in [402, 403]:
+                        if not self.is_sleeping:
+                            print("\n\033[91m[LICENSE ALERT] 402 Payment Required. Triggering deep sleep mode...\033[0m")
+                            self.hibernate_processes()
+                            
+                    elif response.status_code == 200:
+                        if self.is_sleeping:
+                            print("\n\033[92m[LICENSE RENEWED] Waking up from sleep mode. Resuming inference...\033[0m")
+                            self.wake_processes()
+
                 except Exception as e:
+                    # If Central is unreachable (e.g. Wi-Fi drops), we DO NOT sleep.
+                    # We keep processing locally and wait for Central to come back online.
                     print(f"Heartbeat failed (Central might be down): {e}")
                 
                 time.sleep(10) 
@@ -54,10 +73,6 @@ class SentinelOrchestrator:
         thread.start()
         print(f"[{self.node_id}] Heartbeat thread started.")
         return True
-
-        thread = threading.Thread(target=heartbeat_loop, daemon=True)
-        thread.start()
-        print(f"[{self.node_id}] Heartbeat thread started.")
 
     def cleanup_redis(self):
         """Flush Redis streams and clean up"""
@@ -160,7 +175,7 @@ class SentinelOrchestrator:
         
         workers = [
             ("OCR Worker", ["python3", "ocr/ocr_worker.py"], "92"),
-            ("Color Worker", ["python3", "color_detection/color_worker.py"], "94"),
+            ("Color Worker", ["python3", "color_detection/color_worker_yolo.py"], "94"),
             ("Logo Worker", ["python3", "logo_detection/logo_worker.py"], "95"),
             ("Violation Worker", ["python3", "violation_detection/violation_worker.py"], "97"),
         ]
@@ -318,6 +333,28 @@ class SentinelOrchestrator:
     def is_pid_alive(self, pid):
         return psutil.pid_exists(pid)
     
+    def hibernate_processes(self):
+        """OS-level suspension of all worker and ingress processes (Drops CPU/GPU usage to 0%)"""
+        self.is_sleeping = True
+        for name, process in self.processes.items():
+            try:
+                p = psutil.Process(process.pid)
+                p.suspend()
+                print(f"  \033[93m[Zzz] Suspended {name}. Compute paused.\033[0m")
+            except Exception as e:
+                print(f"  Failed to suspend {name}: {e}")
+
+    def wake_processes(self):
+        """OS-level resumption of all suspended processes"""
+        self.is_sleeping = False
+        for name, process in self.processes.items():
+            try:
+                p = psutil.Process(process.pid)
+                p.resume()
+                print(f"  \033[92m[☀] Resumed {name}. Compute active.\033[0m")
+            except Exception as e:
+                print(f"  Failed to resume {name}: {e}")
+                
     def run(self):
         """Main orchestrator flow"""
         print("SENTINEL SYSTEM ORCHESTRATOR")

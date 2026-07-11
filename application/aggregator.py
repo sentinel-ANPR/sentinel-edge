@@ -57,6 +57,7 @@ class ResultAggregator:
             return False
 
         endpoint = f"{self.central_url}/api/ingest/vehicle-complete"
+        edge_secret_token = os.getenv("SENTINEL_EDGE_SECRET", "")
         
         # validation: frame_path is mandatory for upload 
         if not frame_path or frame_path in ["None", "", b"None"]:
@@ -77,6 +78,10 @@ class ResultAggregator:
                 "timestamp": job_data["timestamp"]
             }
 
+            headers = {
+                "X-Sentinel-Node-Key": edge_secret_token
+            }
+
             # open keyframe
             files["keyframe_file"] = open(frame_path, "rb")
             
@@ -89,7 +94,7 @@ class ResultAggregator:
                 files["logo_file"] = open(logo_path, "rb")
 
             self.log_agg(f"Uploading {job_data['vehicle_id']} to Central...")
-            response = requests.post(endpoint, data=payload, files=files, timeout=10)
+            response = requests.post(endpoint, data=payload, files=files, headers=headers, timeout=10)
             
             if response.status_code == 200:
                 self.log_agg(f"Success: {job_data['vehicle_id']}")

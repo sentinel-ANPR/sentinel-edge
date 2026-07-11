@@ -41,12 +41,17 @@ class SentinelOrchestrator:
 
     def start_heartbeat(self):
         """Background thread to tell Central Server we are alive and manage sleep states."""
+        edge_secret_token = os.getenv("SENTINEL_EDGE_SECRET", "")
         def heartbeat_loop():
             while True:
                 try:
+                    headers = {
+                        "X-Sentinel-Node-Key": edge_secret_token
+                    }
                     # Ping the central monitoring endpoint
                     response = requests.post(
                         f"{self.central_url}/api/monitor/heartbeat", 
+                        headers=headers,
                         # Updated payload to match your server.py expectations
                         json={"node_id": self.node_id, "location": self.location, "status": "active"}, 
                         timeout=5
